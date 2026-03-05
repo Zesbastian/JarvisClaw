@@ -2,9 +2,16 @@ import 'dotenv/config';
 import readline from 'readline';
 import { EventEmitter } from 'events';
 import { GoogleGenAI } from '@google/genai';
-import fs from 'fs/promises';
+import fs from 'fs';
+const fsPromises = fs.promises;
 import path from 'path';
+import { spawn } from 'child_process';
+import ffmpeg from 'fluent-ffmpeg';
+import installer from '@ffmpeg-installer/ffmpeg';
+ffmpeg.setFfmpegPath(installer.path);
+
 import { MemoryService } from './memory.js';
+import tts from './tts.js';
 
 // Inicializar Engram Service
 const memoryService = new MemoryService();
@@ -123,7 +130,7 @@ ENGRAM (MEMORIA PERSISTENTE): Es CRÍTICO que uses la herramienta 'save_memory' 
         });
     }
 
-    async processInput(userInput, retryCount = 0) {
+    async processInput(userInput, retryCount = 0, audioFilePath = null) {
         const MAX_RETRIES = 3;
         const RETRY_WAIT_SECONDS = 35;
         const MAX_HISTORY_LENGTH = 10; // Ventana deslizante (aprox 5 idas y vueltas)
@@ -145,9 +152,34 @@ ENGRAM (MEMORIA PERSISTENTE): Es CRÍTICO que uses la herramienta 'save_memory' 
 
             // RAG Semántico: Buscar sólo memorias relevantes en lugar de inyectar todo `.engram`
             const dynamicContext = memoryService.getRelevantMemoriesForPrompt(userInput);
-            const enrichedInput = `${dynamicContext}\n\nUsuario dice: ${userInput}`;
+            const enrichedInputText = `${dynamicContext}\n\nUsuario dice: ${userInput}`;
 
-            const response = await this.chatSession.sendMessage({ message: enrichedInput });
+            let response;
+
+            if (audioFilePath) {
+                // Modo Multimodal: Enviar Audio + Contexto de Texto
+                console.log(`📁 Subiendo audio temporal a Google AI...`);
+                const uploadResult = await ai.files.upload({
+                    file: audioFilePath,
+                    mimeType: 'audio/wav',
+                });
+
+                response = await this.chatSession.sendMessage({
+                    message: [
+                        { text: enrichedInputText },
+                        { fileData: { fileUri: uploadResult.uri, mimeType: uploadResult.mimeType } }
+                    ]
+                });
+
+                // NO PODEMOS BORRAR EL ARCHIVO en la nube inmediatamente.
+                // Como el SDK mantiene un "chatHistory", si borramos el audio del turno 1,
+                // cuando enviemos el turno 2, Gemini leerá el historial, buscará la URI del turno 1
+                // y lanzará un error 403 PERMISSION_DENIED. Los archivos deben expirar solos (Google los purga en 48hs).
+
+            } else {
+                // Modo Texto Clásico
+                response = await this.chatSession.sendMessage({ message: enrichedInputText });
+            }
 
             // Verificar si la respuesta incluye una llamada a función
             if (response.functionCalls && response.functionCalls.length > 0) {
@@ -278,18 +310,66 @@ const startApp = async () => {
     const customs = new PermissionCustoms(rl);
 
     console.log('🤖 Bienvenido a JARVIS/SecureClaw Prototype (Powered by Gemini API).');
-    console.log('Ingresa un comando. Escribe "salir" para terminar.\n');
+    console.log('Ingresa un comando. Escribe "salir" para terminar o "/voz" para hablar por micrófono.\n');
+
+    tts.speak("Sistemas en línea. Esperando órdenes.");
 
     const promptUser = () => {
         rl.question('Usuario > ', async (input) => {
             if (input.toLowerCase() === 'salir') {
                 console.log('Apagando sistemas. Hasta luego.');
+                tts.speak("Apagando. Adiós señor.");
                 rl.close();
                 return;
             }
 
-            // Paso 1: El Cerebro procesa el texto
-            const response = await brain.processInput(input);
+            let response;
+
+            if (input.toLowerCase() === '/voz') {
+                // Flujo STT (Speech-to-Text) Nativo con Node + FFMPEG
+                tts.speak("Escuchando.");
+                const audioPath = path.join(process.cwd(), 'temp_audio.wav');
+
+                console.log(`\n🎙️ (JARVIS): Grabando por 7 segundos... Hable ahora.`);
+
+                await new Promise((resolve, reject) => {
+                    ffmpeg()
+                        .input('audio=Micrófono (Realtek High Definition Audio)') // Localizado de la terminal del usuario
+                        .inputFormat('dshow')
+                        .audioFrequency(16000)
+                        .audioChannels(1)
+                        .duration(7) // Grabar 7 segundos
+                        .on('error', (err) => {
+                            // Failsafe genérico para Windows por defecto
+                            console.error('Buscando microfono fallback:', err.message);
+                            ffmpeg()
+                                .input('audio=@device_cm_{33D9A762-90C8-11D0-BD43-00A0C911CE86}\\wave_{377CDCBA-751D-4637-981F-CCEBF018185E}') // GUID Localizado
+                                .inputFormat('dshow')
+                                .duration(7)
+                                .save(audioPath)
+                                .on('end', () => {
+                                    console.log(`⏸️ Grabación finalizada (Fallback).`);
+                                    resolve();
+                                })
+                                .on('error', (e) => reject(e));
+                        })
+                        .on('end', () => {
+                            console.log(`⏸️ Grabación finalizada.`);
+                            resolve();
+                        })
+                        .save(audioPath);
+                });
+
+                // Procesar enviando el audio con un texto base
+                response = await brain.processInput("Por favor, procesa y responde al audio adjunto.", 0, audioPath);
+
+                // Borrar el archivo temporal
+                try { await fsPromises.unlink(audioPath); } catch (e) { }
+            } else {
+                // Flujo Texto Clásico
+                // Paso 1: El Cerebro procesa el texto
+                response = await brain.processInput(input);
+            }
 
             // Paso 2: Si es una acción, pasa por la Conciencia
             if (response.type === 'action_request') {
@@ -304,10 +384,13 @@ const startApp = async () => {
                         const contextInjection = `[Módulo Sistema - Resultado Herramienta: ${response.tool}]\nERROR CRÍTICO: ACABAS DE SER BLOQUEADO POR LA CONCIENCIA. Razón: ${conscienceDecision.reason}`;
                         const denyResponse = await brain.chatSession.sendMessage({ message: contextInjection });
                         console.log(`\n🤖 (Agente post-bloqueo): ${denyResponse.text}\n`);
+                        tts.speak(denyResponse.text);
                     } catch (e) { console.log(e); }
 
                 } else {
                     console.log(`\n✅ (Conciencia): Acción evaluada como "Técnicamente Segura". Pasando a la Aduana Humana...`);
+                    tts.speak(`He decidido usar la herramienta ${response.tool}. ¿Me autoriza el comando?`);
+
                     // Paso 3: Si la Conciencia aprueba, pasa a la Aduana
                     const isApprovedByHuman = await customs.askUserPermission(response);
 
@@ -324,11 +407,11 @@ const startApp = async () => {
                                 : SANDBOX_DIR;
 
                             if (response.tool === 'list_directory') {
-                                const files = await fs.readdir(targetPath);
+                                const files = await fsPromises.readdir(targetPath);
                                 functionResult = `Contenido de ${targetPath}: \n${files.join('\n')}`;
                             }
                             else if (response.tool === 'read_file') {
-                                const fullContent = await fs.readFile(targetPath, 'utf8');
+                                const fullContent = await fsPromises.readFile(targetPath, 'utf8');
 
                                 // Lógica de Paginación para Ahorrar Tokens (Fase 4)
                                 const startLine = response.params.start_line ? Math.max(1, response.params.start_line) : 1;
@@ -367,12 +450,11 @@ const startApp = async () => {
                         try {
                             const resultObj = isSuccess ? { success: true, result: functionResult } : { success: false, error: functionResult };
 
-                            // Forzamos al modelo a absorber el resultado mediante un nuevo prompt con el contexto como user text.
-                            // Esto evita los bugs persistentes de parseo de [{functionResponse: ...}] en los diferentes SDKs de Google.
                             const contextInjection = `[Módulo Sistema - Resultado Ejecución Herramienta: ${response.tool}]\n${JSON.stringify(resultObj)}\nPor favor, responde al usuario final teniendo en cuenta esta información.`;
 
                             const postExecutionResponse = await brain.chatSession.sendMessage({ message: contextInjection });
                             console.log(`\n🤖 (Agente post-ejecución): ${postExecutionResponse.text}\n`);
+                            tts.speak(postExecutionResponse.text);
                         } catch (e) {
                             console.error("\n[CRASH INTERCEPTADO EN API CALL - EJECUCIÓN EXITOSA]:", e.message || e);
                             console.error(e.stack);
@@ -384,11 +466,13 @@ const startApp = async () => {
                             const contextInjection = `[Módulo Sistema - Resultado Herramienta: ${response.tool}]\nEl usuario humano (HITL) DECLINÓ EXPRESAMENTE permitir que uses esta herramienta.`;
                             const refusedResponse = await brain.chatSession.sendMessage({ message: contextInjection });
                             console.log(`\n🤖 (Agente pos-denegación): ${refusedResponse.text}\n`);
+                            tts.speak(refusedResponse.text);
                         } catch (e) { console.log(e); }
                     }
                 }
             } else if (response.type === 'chat_response') {
                 console.log(`\n🤖 (Agente): ${response.text}\n`);
+                tts.speak(response.text);
             }
 
             promptUser();

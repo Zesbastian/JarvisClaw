@@ -44,9 +44,18 @@ SecureClaw no confía en la IA. Todas las peticiones del LLM (El "Cerebro") pasa
 
 ---
 
-## Siguientes Pasos (El Futuro: "JARVIS")
+## Siguientes Pasos y Futuro
 
-Nuestra meta es transformar este motor rígido en un agente vivo y proactivo:
+### ✅ Fase 5: Modo JARVIS (Voz y Oídos - Completada)
+Añadimos un bucle de interacción por voz real al CLI:
+*   **Voz (Generación):** Usa PowerShell (`System.Speech.Synthesis`) sobre `tts.js` para hablar usando SAPI5 en Windows (sin latencia, costo cero).
+*   **Oídos (Comprensión):** Captura el micrófono nativo en Windows usando `fluent-ffmpeg` con FFMPEG y envía el `.wav` al API File de `@google/genai` (Multimodal STT). Evitando así lidiar localmente con librerías frágiles como PyAudio o Whisper.
+*   [📄 Leer Implementación Técnica](documentacion/Fase5_Voice.md)
+
+---
+
+### Fase 6: Autonomía Estructurada
+Nuestra meta es transformar este prototipo rígido en un agente completamente proactivo:
 
 ### 1. Spec-Driven Development (SDD) Integrado
 Antes de escribir cualquier código en el Sandbox, SecureClaw será forzado a redactar y pedir aprobación para un plan (como lo hacemos ahora en las herramientas, pero sistematizado para todo el proyecto).

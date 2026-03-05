@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import stringSimilarity from 'string-similarity';
 
 const MEMORY_FILE = path.resolve(process.cwd(), '.engram.json');
 
@@ -51,8 +52,6 @@ export class MemoryService {
         }
 
         try {
-            const stringSimilarity = require('string-similarity');
-
             // Creamos un array de strings (el target a buscar) mezclando categoria y contenido
             const targetStrings = this.memories.map(m => `${m.category} ${m.content}`);
 
