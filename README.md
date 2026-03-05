@@ -33,14 +33,22 @@ SecureClaw no confía en la IA. Todas las peticiones del LLM (El "Cerebro") pasa
 
 ---
 
-## Siguientes Pasos (Fase 3 y el Futuro)
+### ✅ Fase 3: Ecosistema y Persistencia (Engram)
+*   **Memoria a Largo Plazo (`memory.js`):** El agente usa `save_memory` para aprender permanentemente reglas o datos del usuario en un archivo `.engram.json`.
 
-Nuestra próxima meta es darle al agente una visión completa de tus proyectos sin exponer tu máquina, inspirados fuertemente en el ecosistema **Gentle AI Stack** (por Alan Buscaglia):
+### ✅ Fase 4: Optimización de Costos y Arquitectura Local (Pay-as-you-go Ready)
+*   **RAG Local Matemático de $0:** En lugar de inyectar todo el engrama y gastar tokens de API masivamente, usamos `string-similarity` para vectorizar y recuperar localmente solo los 3 recuerdos más relevantes por cada pregunta del usuario.
+*   **Sliding Window:** Poda automática del historial de la sesión (`chatSession.history`) limitándolo a los últimos 10 turnos.
+*   **Paginación de Herramientas:** Truncamiento lógico de respuestas masivas (ej. `read_file` lee máximo 100 líneas por defecto, con parámetros explícitos de `start_line` y `end_line`), evitando facturación excesiva en el *Paid Tier*.
+*   [📄 Leer más en la Documentación de Arquitectura](documentacion/01_evolucion_arquitectura.md)
 
-### 1. Persistencia y Memoria a Largo Plazo (Inspirado en *Engram*)
-Actualmente, SecureClaw tiene amnesia entre ejecuciones del script. Implementaremos un motor de memoria local (SQLite/Vector DB) donde el agente almacene tus preferencias, decisiones arquitectónicas previas y contexto del proyecto para evitar repetir errores.
+---
 
-### 2. Spec-Driven Development (SDD) Integrado
+## Siguientes Pasos (El Futuro: "JARVIS")
+
+Nuestra meta es transformar este motor rígido en un agente vivo y proactivo:
+
+### 1. Spec-Driven Development (SDD) Integrado
 Antes de escribir cualquier código en el Sandbox, SecureClaw será forzado a redactar y pedir aprobación para un plan (como lo hacemos ahora en las herramientas, pero sistematizado para todo el proyecto).
 
 ### 3. Contextualización Segura de Micro-Agentes

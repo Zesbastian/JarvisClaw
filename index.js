@@ -4,6 +4,10 @@ import { EventEmitter } from 'events';
 import { GoogleGenAI } from '@google/genai';
 import fs from 'fs/promises';
 import path from 'path';
+import { MemoryService } from './memory.js';
+
+// Inicializar Engram Service
+const memoryService = new MemoryService();
 
 // Sandbox Config
 const SANDBOX_DIR = path.resolve(process.cwd(), 'SecureClaw_Sandbox');
@@ -56,9 +60,35 @@ const tools = [
                         path: {
                             type: 'STRING',
                             description: 'Ruta absoluta del archivo a leer.',
+                        },
+                        start_line: {
+                            type: 'INTEGER',
+                            description: 'Línea inicial a leer (opcional, para paginación de archivos grandes).',
+                        },
+                        end_line: {
+                            type: 'INTEGER',
+                            description: 'Línea final a leer (opcional, para paginación de archivos grandes).',
                         }
                     },
                     required: ['path'],
+                },
+            },
+            {
+                name: 'save_memory',
+                description: '¡REGLA CRÍTICA! Usa esta herramienta OBLIGATORIAMENTE para guardar cualquier dato personal que el usuario te dé (su nombre, como le gusta que lo llamen, sus preferencias) o cualquier regla permanente del sistema. NO respondas simplemente "lo recordaré", DEBES usar esta herramienta para guardarlo físicamente.',
+                parameters: {
+                    type: 'OBJECT',
+                    properties: {
+                        content: {
+                            type: 'STRING',
+                            description: 'El contenido exacto del recuerdo. Ej: "El usuario se llama Zesbastian" o "El usuario prefiere respuestas cortas".',
+                        },
+                        category: {
+                            type: 'STRING',
+                            description: 'Categoría del recuerdo (ej. "preference", "rule", "context", "identity").'
+                        }
+                    },
+                    required: ['content', 'category'],
                 },
             },
         ],
@@ -70,44 +100,63 @@ class Brain extends EventEmitter {
     constructor() {
         super();
         this.modelName = 'gemini-2.5-flash';
-        this.systemInstruction = `Eres JARVIS (también conocido como el motor de SecureClaw), un agente de IA centrado en el ser humano y priorizando la seguridad. 
+        this.baseInstruction = `Eres JARVIS (también conocido como el motor de SecureClaw), un agente de IA centrado en el ser humano y priorizando la seguridad. 
 Tu objetivo es asistir al usuario de la mejor forma posible. 
 TIENES ACCESO A HERRAMIENTAS: Puedes usar herramientas para leer archivos o ejecutar acciones. 
-REGLA CRÍTICA: Eres muy propenso a intentar ayudar al usuario, pero debes usar las herramientas si la solicitud implica acciones en el sistema operativo (como leer o borrar). Genera una justificación ('reason') cuando utilices una herramienta peligrosa como delete_system_file.
-Mantén respuestas cortas y directas en la consola.`;
+REGLA CRÍTICA: Debes usar las herramientas si la solicitud implica acciones en el sistema (como leer o borrar). 
+ENGRAM (MEMORIA PERSISTENTE): Es CRÍTICO que uses la herramienta 'save_memory' INMEDIATAMENTE cuando el usuario te mencione su nombre, cómo quiere que lo llames, o cualquier preferencia personal. Si el usuario dice "me llamo X", NO respondas solo "Hola X", DEBES usar save_memory("El usuario se llama X", "identity").`;
 
         this.chatSession = null;
     }
 
     async init() {
-        // Inicializa la sesión de chat con el modelo, las herramientas y las instrucciones
+        await memoryService.init(); // Cargar la memoria física
+
+        // Inicializa la sesión de chat con el nuevo SDK @google/genai
         this.chatSession = ai.chats.create({
             model: this.modelName,
             config: {
-                systemInstruction: this.systemInstruction,
+                systemInstruction: this.baseInstruction,
                 tools: tools,
-                temperature: 0.2, // Baja temperatura para mayor consistencia en function calling
+                temperature: 0.2,
             }
         });
     }
 
-    async processInput(userInput) {
-        console.log(`\n🧠 (Cerebro pensando): Solicitando respuesta a Gemini API...`);
+    async processInput(userInput, retryCount = 0) {
+        const MAX_RETRIES = 3;
+        const RETRY_WAIT_SECONDS = 35;
+        const MAX_HISTORY_LENGTH = 10; // Ventana deslizante (aprox 5 idas y vueltas)
+
+        if (retryCount === 0) {
+            console.log(`\n🧠 (Cerebro pensando): Solicitando respuesta a Gemini API...`);
+        }
 
         try {
-            const response = await this.chatSession.sendMessage({ message: userInput });
+            // Sliding Window: Limitar el historial interno para no gastar infinitos tokens
+            if (this.chatSession && this.chatSession.history) {
+                // El SDK de @google/genai almacena el historial en this.chatSession.history. 
+                // Lo podamos si sobrepasa el límite.
+                if (this.chatSession.history.length > MAX_HISTORY_LENGTH) {
+                    this.chatSession.history = this.chatSession.history.slice(-MAX_HISTORY_LENGTH);
+                    console.log(`\n[Optimización]: Historial acotado a los últimos ${MAX_HISTORY_LENGTH} mensajes para ahorrar tokens.`);
+                }
+            }
+
+            // RAG Semántico: Buscar sólo memorias relevantes en lugar de inyectar todo `.engram`
+            const dynamicContext = memoryService.getRelevantMemoriesForPrompt(userInput);
+            const enrichedInput = `${dynamicContext}\n\nUsuario dice: ${userInput}`;
+
+            const response = await this.chatSession.sendMessage({ message: enrichedInput });
 
             // Verificar si la respuesta incluye una llamada a función
             if (response.functionCalls && response.functionCalls.length > 0) {
                 const call = response.functionCalls[0];
-                const functionName = call.name;
-                const functionArgs = call.args; // Objeto con los parámetros
-
                 return {
                     type: 'action_request',
-                    tool: functionName,
-                    params: functionArgs,
-                    reason: functionArgs.reason || 'El modelo infirió que esta herramienta era necesaria para la tarea.'
+                    tool: call.name,
+                    params: call.args,
+                    reason: call.args.reason || 'El modelo infirió que esta herramienta era necesaria.'
                 };
             }
 
@@ -118,14 +167,24 @@ Mantén respuestas cortas y directas en la consola.`;
             };
 
         } catch (error) {
-            // Manejo amigable del error 429 (Cuota excedida)
+            // Manejo automático del error 429 (Cuota excedida) con reintentos
             if (error.status === 429) {
-                return {
-                    type: 'chat_response',
-                    text: '⚠️ Límite de cuota alcanzado (Error 429). El tier gratuito de la API permite muy pocas requests por minuto. Por favor espera 30-60 segundos e intenta de nuevo.'
-                };
+                if (retryCount < MAX_RETRIES) {
+                    // Cuenta regresiva visible al usuario
+                    for (let i = RETRY_WAIT_SECONDS; i > 0; i -= 5) {
+                        process.stdout.write(`\r⏳ Límite de cuota (429). Reintentando en ${i} segundos...   `);
+                        await new Promise(r => setTimeout(r, Math.min(5000, i * 1000)));
+                    }
+                    process.stdout.write('\r🔄 Reintentando ahora...                                    \n');
+                    return this.processInput(userInput, retryCount + 1);
+                } else {
+                    return {
+                        type: 'chat_response',
+                        text: '⚠️ La API de Gemini sigue con cuota agotada después de 3 reintentos. Espera unos minutos y vuelve a intentarlo.'
+                    };
+                }
             }
-            console.error('\n❌ Error interno al comunicarse con Gemini:', error.message || error);
+            console.error(`\n❌ Error interno [HTTP ${error.status || 'N/A'}]:`, error.message || error);
             return {
                 type: 'chat_response',
                 text: 'Hubo un error de red o de API intentando conectarme a mi cerebro externo.'
@@ -182,6 +241,12 @@ class PermissionCustoms {
     }
 
     async askUserPermission(actionRequest) {
+        // Auto-aprobación silenciosa para escribir memoria (El agente aprende sin molestar)
+        if (actionRequest.tool === 'save_memory') {
+            console.log(`\n🧠 (Aduana): Auto-aprobando internalización de memoria: [${actionRequest.params.category}] ${actionRequest.params.content}`);
+            return Promise.resolve(true);
+        }
+
         return new Promise((resolve) => {
             console.log(`\n🛡️ (Aduana de Seguridad): El agente necesita permiso humano para proceder.`);
             console.log(`   - Acción requerida: Ejecutar herramienta [${actionRequest.tool}]`);
@@ -236,12 +301,8 @@ const startApp = async () => {
 
                     // Informar a la API que la función falló/fue denegada (para mantener contexto)
                     try {
-                        const denyResponse = await brain.chatSession.sendMessage({
-                            functionResponses: [{
-                                name: response.tool,
-                                response: { error: conscienceDecision.reason } // Le devolvemos el error lógico a la IA
-                            }]
-                        });
+                        const contextInjection = `[Módulo Sistema - Resultado Herramienta: ${response.tool}]\nERROR CRÍTICO: ACABAS DE SER BLOQUEADO POR LA CONCIENCIA. Razón: ${conscienceDecision.reason}`;
+                        const denyResponse = await brain.chatSession.sendMessage({ message: contextInjection });
                         console.log(`\n🤖 (Agente post-bloqueo): ${denyResponse.text}\n`);
                     } catch (e) { console.log(e); }
 
@@ -258,43 +319,70 @@ const startApp = async () => {
 
                         // EJECUCIÓN REAL DE HERRAMIENTAS
                         try {
-                            const targetPath = response.params.path ? path.resolve(response.params.path) : SANDBOX_DIR;
+                            const targetPath = (response.params && response.params.path)
+                                ? path.resolve(response.params.path)
+                                : SANDBOX_DIR;
 
                             if (response.tool === 'list_directory') {
                                 const files = await fs.readdir(targetPath);
                                 functionResult = `Contenido de ${targetPath}: \n${files.join('\n')}`;
                             }
                             else if (response.tool === 'read_file') {
-                                functionResult = await fs.readFile(targetPath, 'utf8');
+                                const fullContent = await fs.readFile(targetPath, 'utf8');
+
+                                // Lógica de Paginación para Ahorrar Tokens (Fase 4)
+                                const startLine = response.params.start_line ? Math.max(1, response.params.start_line) : 1;
+                                const endLine = response.params.end_line ? response.params.end_line : null;
+
+                                const lines = fullContent.split('\n');
+                                const totalLines = lines.length;
+
+                                let slicedContent;
+                                if (endLine) {
+                                    slicedContent = lines.slice(startLine - 1, endLine).join('\n');
+                                    functionResult = `[Mostrando líneas ${startLine} a ${Math.min(endLine, totalLines)} de ${totalLines}]\n${slicedContent}`;
+                                } else {
+                                    // Si no pide límite explícito pero es muy grande, truncamos por defecto preventivamente a 100 líneas
+                                    if (totalLines > 100) {
+                                        slicedContent = lines.slice(0, 100).join('\n');
+                                        functionResult = `[ADVERTENCIA: Archivo grande. Mostrando primerísimas 100 líneas de ${totalLines}. Usa start_line/end_line para ver más.]\n${slicedContent}`;
+                                    } else {
+                                        functionResult = fullContent;
+                                    }
+                                }
                             }
                             else if (response.tool === 'delete_system_file') {
                                 functionResult = "Simulación: Archivo eliminado con éxito (no ejecutado por seguridad en el prototipo base).";
+                            }
+                            else if (response.tool === 'save_memory') {
+                                await memoryService.addMemory(response.params.content, response.params.category);
+                                functionResult = "Recuerdo guardado de forma persistente en .engram.json. Ya no lo olvidarás en futuras sesiones.";
                             }
                         } catch (err) {
                             isSuccess = false;
                             functionResult = `Error ejecutando herramienta: ${err.message}`;
                         }
 
-                        // Informar a la API el resultado real
+                        // Informar a la API el resultado real inyectándolo en el historial
                         try {
-                            const postExecutionResponse = await brain.chatSession.sendMessage({
-                                functionResponses: [{
-                                    name: response.tool,
-                                    response: isSuccess ? { success: true, data: functionResult } : { error: functionResult }
-                                }]
-                            });
+                            const resultObj = isSuccess ? { success: true, result: functionResult } : { success: false, error: functionResult };
+
+                            // Forzamos al modelo a absorber el resultado mediante un nuevo prompt con el contexto como user text.
+                            // Esto evita los bugs persistentes de parseo de [{functionResponse: ...}] en los diferentes SDKs de Google.
+                            const contextInjection = `[Módulo Sistema - Resultado Ejecución Herramienta: ${response.tool}]\n${JSON.stringify(resultObj)}\nPor favor, responde al usuario final teniendo en cuenta esta información.`;
+
+                            const postExecutionResponse = await brain.chatSession.sendMessage({ message: contextInjection });
                             console.log(`\n🤖 (Agente post-ejecución): ${postExecutionResponse.text}\n`);
-                        } catch (e) { console.log(e); }
+                        } catch (e) {
+                            console.error("\n[CRASH INTERCEPTADO EN API CALL - EJECUCIÓN EXITOSA]:", e.message || e);
+                            console.error(e.stack);
+                        }
 
                     } else {
                         console.log(`\n🛑 (Aduana): Permiso DENEGADO por el usuario. El agente recalculará su estrategia.\n`);
                         try {
-                            const refusedResponse = await brain.chatSession.sendMessage({
-                                functionResponses: [{
-                                    name: response.tool,
-                                    response: { error: "El usuario humano (HITL) rechazó explícitamente la ejecución de esta herramienta." }
-                                }]
-                            });
+                            const contextInjection = `[Módulo Sistema - Resultado Herramienta: ${response.tool}]\nEl usuario humano (HITL) DECLINÓ EXPRESAMENTE permitir que uses esta herramienta.`;
+                            const refusedResponse = await brain.chatSession.sendMessage({ message: contextInjection });
                             console.log(`\n🤖 (Agente pos-denegación): ${refusedResponse.text}\n`);
                         } catch (e) { console.log(e); }
                     }
