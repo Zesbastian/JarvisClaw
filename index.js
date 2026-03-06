@@ -12,6 +12,7 @@ ffmpeg.setFfmpegPath(installer.path);
 
 import { MemoryService } from './memory.js';
 import tts from './tts.js';
+import wakeWord from './wake_word.js';
 
 // Inicializar Engram Service
 const memoryService = new MemoryService();
@@ -309,10 +310,53 @@ const startApp = async () => {
     const conscience = new ConscienceLayer();
     const customs = new PermissionCustoms(rl);
 
-    console.log('🤖 Bienvenido a JARVIS/SecureClaw Prototype (Powered by Gemini API).');
-    console.log('Ingresa un comando. Escribe "salir" para terminar o "/voz" para hablar por micrófono.\n');
+    console.log('🤖 JARVIS/SecureClaw en linea (Powered by Gemini API).');
+    console.log('Di "Jarvis" para activar el microfono. Escribe texto o "/voz" (manual). "salir" para terminar.\n');
 
     tts.speak("Sistemas en línea. Esperando órdenes.");
+
+    // Mutex: evita que se dispare doble grabación si Porcupine detecta la voz de JARVIS hablando
+    let isProcessing = false;
+
+    // Activar escucha de Wake Word en segundo plano
+    wakeWord.start();
+    wakeWord.on('wakeWord', async () => {
+        if (isProcessing) {
+            console.log('\n[Wake Word]: Activación ignorada, JARVIS ya está procesando...');
+            return;
+        }
+        isProcessing = true;
+
+        // Esperar a que JARVIS termine de decir "Escuchando" ANTES de grabar
+        await tts.speak("Escuchando.");
+        const audioPath = path.join(process.cwd(), 'temp_audio.wav');
+        console.log(`\n🎙️ (JARVIS): Grabando por 7 segundos...`);
+
+        await new Promise((resolve) => {
+            ffmpeg()
+                .input('audio=Micrófono (Realtek High Definition Audio)')
+                .inputFormat('dshow')
+                .audioFrequency(16000)
+                .audioChannels(1)
+                .duration(7)
+                .on('error', (err) => {
+                    console.error('Error de microfono en Wake Word:', err.message);
+                    resolve();
+                })
+                .on('end', resolve)
+                .save(audioPath);
+        });
+
+        console.log('⏸️ Grabación finalizada.');
+        const response = await brain.processInput('[Comando de Voz - transcribir y responder]', 0, audioPath);
+
+        if (response.type === 'chat_response') {
+            console.log(`\n🤖 (JARVIS): ${response.text}\n`);
+            await tts.speak(response.text); // Await para que Porcupine no se reactive mientras habla
+        }
+
+        isProcessing = false; // Liberar mutex: JARVIS listo para escuchar de nuevo
+    });
 
     const promptUser = () => {
         rl.question('Usuario > ', async (input) => {

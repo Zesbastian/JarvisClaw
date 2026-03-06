@@ -27,10 +27,18 @@ class TTSService {
                 
                 Add-Type -AssemblyName System.speech
                 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-                $synth.Volume = 100 # Forzar volumen al máximo
+                $synth.Volume = 100
+                $synth.Rate = 1  # Velocidad natural (+1 = ligeramente más fluido que defecto)
                 
-                # Descomentar para ver las voces instaladas si falla
-                # $synth.GetInstalledVoices() | Select-Object -ExpandProperty VoiceInfo | Format-Table Name
+                # Intentar cargar Pablo (voz neural de Windows 11 en español)
+                $pablo = $synth.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Name -like '*Pablo*' }
+                if ($pablo.Count -gt 0) {
+                    $synth.SelectVoice($pablo[0].VoiceInfo.Name)
+                } else {
+                    # Fallback: cualquier voz masculina disponible
+                    $voces = $synth.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Gender -eq 'Male' }
+                    if ($voces.Count -gt 0) { $synth.SelectVoice($voces[0].VoiceInfo.Name) }
+                }
                 
                 $synth.Speak($text)
             `;
