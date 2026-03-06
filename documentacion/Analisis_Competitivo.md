@@ -48,13 +48,46 @@ SecureClaw/JARVIS no es un simple chatbot ni un copiloto de código. Es un **age
 
 ---
 
-## Lo que "OpenClaw" (anteriormente conocido como Molobot, también visto como Clawe, ClawAI)
+## Lo que ES realmente OpenClaw 🦞 (el competidor más parecido a nosotros)
 
-> **AVISO:** No encontré una única empresa llamada "OpenClaw" con ese nombre específico. El término parece referirse colectivamente a proyectos comunitarios derivados de OpenHands / OpenDevin. Si tenés más información sobre qué producto específico te refieres, actualizaré este análisis.
+> **Historial de nombres:** Clawd Bot → MoltBot → **OpenClaw**  
+> **Autor:** Peter Steinberger (creador de PSPDFKit, empresa valorada en +$100M)  
+> **GitHub:** [openclaw/openclaw](https://github.com/openclaw/openclaw) · 59 releases  
+> **Fuente de análisis de seguridad:** [1Password Blog - Jason Meller, Enero 2026](https://1password.com/blog/its-openclaw)
 
-Lo que SÍ encontré bajo ese ecosistema:
-*   Proyectos que tomaron el código de OpenDevin y lo re-empaquetaron con interfaces más simples.
-*   También existen proyectos propios de LATAM como **Blip** (Brasil, bots conversacionales empresariales) e **InvGate** (Argentina, automatización IT).
+### ¿Qué hace en realidad?
+OpenClaw es el proyecto de asistente personal más comparable a SecureClaw en el mundo open source. Es un **agente de IA personal local-first** que corre en tu propio hardware. El eslogan es: *"Your own personal AI assistant. Any OS. Any Platform. The lobster way 🦞"*
+
+**Capacidades reales de OpenClaw (de su README oficial):**
+- **Multi-canal:** Responde en WhatsApp, Telegram, Slack, Discord, Signal, iMessage/BlueBubbles, IRC, MS Teams, Matrix y 15+ plataformas más desde el mismo gateway.
+- **Voz bidireccional:** Wake Word (en macOS/iOS), Talk Mode continuo en Android. Usa ElevenLabs para TTS con fallback al TTS del sistema.
+- **Live Canvas:** Interfaz visual interactiva que el agente controla directamente (estilo A2UI).
+- **Apps nativas:** macOS menu bar app, nodos para iOS y Android.
+- **Cron/Scheduler:** Tareas programadas nativas.
+- **Multi-agente:** Ruteo de canales a agentes aislados con sesiones independientes.
+- **Modelo LLM:** Por defecto `claude-opus-4` de Anthropic (modelo de pago).
+
+### El Modelo de Seguridad de OpenClaw (y su Talón de Aquiles)
+Directamente citado de su README:
+> *"Default: tools run on the host for the main session, **so the agent has full access when it's just you**."*  
+> *"There is no 'perfectly secure' setup."*
+
+Sus propias opciones de seguridad son: Docker sandboxing para sesiones de grupos (no para el usuario principal) y una lista de `denylist/allowlist` de herramientas. No existe un equivalente a nuestra **Conscience Layer ni nuestra Aduana (Human-in-the-Loop)**.
+
+### Lo que encontró 1Password (Enero 2026) — Análisis de Jason Meller:
+El análisis de seguridad publicado por el CISO de 1Password en enero 2026 describe el problema exacto que nosotros **ya resolvimos desde el diseño:**
+
+> *"OpenClaw's memory and configuration are not abstract concepts. They are files. They live on disk. They are readable. They are in predictable locations. **And they are plain text.**"*
+> 
+> *"If an attacker compromises [your machine], they do not need to do anything fancy. Modern infostealers scrape common directories and exfiltrate anything that looks like credentials, tokens, session logs, or developer config."*
+
+El artículo describe el risk de que, si un infostealer accede al directorio `~/.openclaw/`, obtiene:
+- Todas tus API keys en texto plano
+- Tokens de WhatsApp, Telegram, Slack
+- Transcripciones completas de conversaciones
+- El archivo de **memoria a largo plazo** que describe quién sos, qué construís, con quién trabajás
+
+Meller lo resume: *"A hundred stolen tokens and sessions, plus a long-term memory file that describes who you are... is the raw material needed to phish you, blackmail you, or **fully impersonate you in a way that even your closest friends can't detect**."*
 
 ---
 

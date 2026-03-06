@@ -13,6 +13,7 @@ ffmpeg.setFfmpegPath(installer.path);
 import { MemoryService } from './memory.js';
 import tts from './tts.js';
 import wakeWord from './wake_word.js';
+import TelegramGateway from './telegram_gateway.js';
 
 // Inicializar Engram Service
 const memoryService = new MemoryService();
@@ -320,6 +321,10 @@ const startApp = async () => {
 
     // Activar escucha de Wake Word en segundo plano
     wakeWord.start();
+
+    // Activar Gateway Movil (Telegram) - funciona en paralelo al loop de consola
+    const telegramGateway = new TelegramGateway(brain, tts);
+    telegramGateway.start();
     wakeWord.on('wakeWord', async () => {
         if (isProcessing) {
             console.log('\n[Wake Word]: Activación ignorada, JARVIS ya está procesando...');
