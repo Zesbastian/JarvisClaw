@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import stringSimilarity from 'string-similarity';
+import { CryptoService } from './crypto_service.js';
 
 const MEMORY_FILE = path.resolve(process.cwd(), '.engram.json');
 
@@ -13,14 +14,26 @@ export class MemoryService {
         try {
             // Intenta leer el archivo de memorias
             const data = await fs.readFile(MEMORY_FILE, 'utf8');
-            this.memories = JSON.parse(data);
+            try {
+                const decryptedData = await CryptoService.decryptData(data);
+                this.memories = JSON.parse(decryptedData);
+            } catch (decryptionError) {
+                try {
+                    this.memories = JSON.parse(data);
+                    console.log("⚠️ [MemoryService]: Engram en texto plano detectado. Migrando al vuelo a AES-256...");
+                    await this.saveToFile();
+                } catch (parseError) {
+                    console.error("❌ [MemoryService]: No se pudo procesar la lectura de memoria:", parseError.message);
+                    this.memories = [];
+                }
+            }
         } catch (error) {
             // Si no existe, inicializa un arreglo vacío
             if (error.code === 'ENOENT') {
                 this.memories = [];
                 await this.saveToFile();
             } else {
-                console.error('Error inicializando Engram:', error);
+                console.error('Error leyendo Engram del disco:', error);
             }
         }
     }
@@ -38,7 +51,13 @@ export class MemoryService {
     }
 
     async saveToFile() {
-        await fs.writeFile(MEMORY_FILE, JSON.stringify(this.memories, null, 2), 'utf8');
+        try {
+            const jsonText = JSON.stringify(this.memories, null, 2);
+            const encryptedData = await CryptoService.encryptData(jsonText);
+            await fs.writeFile(MEMORY_FILE, encryptedData, 'utf8');
+        } catch (error) {
+            console.error('❌ [MemoryService]: Error guardando Engram cifrado:', error);
+        }
     }
 
     // Devuelve un string optimizado buscando las N memorias más relevantes al input (RAG Seco)

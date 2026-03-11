@@ -108,6 +108,26 @@ Meller lo resume: *"A hundred stolen tokens and sessions, plus a long-term memor
 
 SecureClaw llena un nicho real que ningún jugador comercial atiende hoy: **asistente IA personal, soberano, con voz bidireccional real, memoria persistente y control de seguridad, orientado al mercado hispanohablante.**
 
-Los grandes corporativos (Microsoft, Google, Anthropic) tienen recursos infinitos pero están jugando al mercado empresarial masivo. Ninguno va a construir una experiencia vocal hands-free personalizable para un usuario técnico de LATAM que quiere controlar su propia setup sin depender de suscripciones costosas y sin entregar sus datos a la nube.
+Los grandes corporativos (Microsoft, Google, Anthropic) tienen recursos infinitos pero están jugando al mercado empresarial. El mayor riesgo no es la competencia — es el mantenimiento de un solo autor. SecureClaw depende de un conjunto de APIs y binarios (Picovoice, FFmpeg, Google Genai SDK) que cambian frecuentemente. Sin tests ni supervisor de procesos, cada actualización es un riesgo de regresión.
 
-**Probabilidad de éxito estimada:** Alta en nicho técnico/prosumer de LATAM, siempre que el foco sea la experiencia propia y no competir frontalmente con los gigantes en escala.
+Probabilidad real de competitividad: Alta como herramienta prosumer/técnica. Media como producto de mercado masivo. Baja como competidor directo a OpenClaw sin un equipo detrás.
+
+---
+
+## 5. SecureClaw vs. La Nueva Ola de Agentes (Marzo 2026)
+
+Observando lo que construyen desarrolladores indie e ingenieros de datos en LATAM (ej. orquestadores multi-agente para desarrollo o agentes basados en MCP para catálogos de datos como OpenMetadata), quedan claras las diferencias filosóficas de SecureClaw:
+
+### A) Orquestación vs. Identidad Singular (Persona)
+*   **La Tendencia:** Desarrolladores usando frameworks (ej. CrewAI, AutoGen) para armar "líneas de ensamblaje" de agentes. Un agente lee, otro escribe, otro testea. Es *Vibe Coding / Orquestación*.
+*   **SecureClaw:** No es una fábrica de agentes para tareas masivas. Es un **Mayordomo Singular**. JARVIS tiene una "personalidad" (SOUL) constante, un solo hilo de memoria persistente (*.engram.json*) sobre ti, y te asiste a través de múltiples dominios (voz en la PC, archivos en disco, chat en Telegram).
+
+### B) Herramientas de Dominio (Domain-Specific) vs. Generalista con "Manos"
+*   **La Tendencia:** Agentes hiper-especializados. Ej: Un agente de Gobierno de Datos que usa MCP (Model Context Protocol) para consultar bases de datos corporativas a $0 por consulta (Gemini Free Tier + Streamlit). Su UI es una pestaña en el navegador y su objetivo es exclusivo.
+*   **SecureClaw:** Un **Generalista del Sistema Operativo**. No vive en una web, vive en tu micrófono (Wake Word) y en tu celular (Telegram Gateway). Puede consultar una API, pero también puede borrar una carpeta o leerte un correo.
+
+### C) La Aduana (HITL) como Eje de la Arquitectura
+*   Los agentes especializados (como el de OpenMetadata) son de *Solo Lectura* (consultan catálogos). Los orquestadores de código corren en sandboxes de usar-y-tirar.
+*   SecureClaw presupone que le vas a dar permisos peligrosos en tu PC principal. Por eso, su mayor diferenciador arquitectónico es **La Aduana con confirmación Omnicanal** (los botones inline de Aprobar/Denegar en Telegram). Ningún agente especializado de datos o código construye interfaces de confirmación humana asíncronas en mensajería móvil como "core feature"; para JARVIS, es su razón de existir sin destruir tu máquina.
+
+**Lección Clave del Ecosistema:** El mercado está adoptando **MCP (Model Context Protocol)** estándar para conectar herramientas (APIs, Bases de datos) a los Prompts. SecureClaw actualmente *hardcodea* sus herramientas (Tool Declarations) directo en el SDK de Gemini. Soporte futuro para servidores MCP en SecureClaw permitiría que JARVIS se conecte instantáneamente a ecosistemas enteros (Notion, GitHub, PostgreSQL) sin programar una sola línea de código nueva.
