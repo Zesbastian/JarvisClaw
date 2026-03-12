@@ -119,6 +119,7 @@ REGLA CRÍTICA: Debes usar las herramientas si la solicitud implica acciones en 
 ENGRAM (MEMORIA PERSISTENTE): Es CRÍTICO que uses la herramienta 'save_memory' INMEDIATAMENTE cuando el usuario te mencione su nombre, cómo quiere que lo llames, o cualquier preferencia personal. Si el usuario dice "me llamo X", NO respondas solo "Hola X", DEBES usar save_memory("El usuario se llama X", "identity").`;
 
         this.chatSession = null;
+        this.memoryService = memoryService; // Exponer para TelegramGateway
     }
 
     async init() {

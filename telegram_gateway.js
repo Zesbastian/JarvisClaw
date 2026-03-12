@@ -10,6 +10,11 @@
  */
 import 'dotenv/config';
 import { Telegraf, Markup } from 'telegraf';
+import fs from 'fs/promises';
+import path from 'path';
+
+const SANDBOX_DIR = path.resolve(process.cwd(), 'SecureClaw_Sandbox');
+const FORBIDDEN_TOOLS = ['delete_system_file', 'format_drive'];
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ALLOWED_ID = process.env.TELEGRAM_ALLOWED_ID
@@ -73,25 +78,71 @@ class TelegramGateway {
         // ── Mensajes de texto ──────────────────────────────────────────────────
         this.bot.on('text', async (ctx) => {
             const userMessage = ctx.message.text;
-            if (userMessage.startsWith('/')) return; // Ignorar comandos no definidos
+            if (userMessage.startsWith('/')) return;
 
             console.log(`\n📱 [Telegram de @${ctx.from.username}]: ${userMessage}`);
-
-            // Indicador de "escribiendo..."
             await ctx.sendChatAction('typing');
 
             try {
-                const response = await this.brain.processInput(userMessage, 0, null, (toolRequest) => {
-                    // Callback para el HITL de la Aduana vía Telegram
-                    return this._askApprovalViaTelegram(ctx, toolRequest);
-                });
+                const response = await this.brain.processInput(userMessage);
 
                 if (response.type === 'chat_response') {
-                    // Responder texto en Telegram
-                    await ctx.reply(`${response.text}`);
-
-                    // También hablar en la PC si está en casa (TTS local)
+                    await ctx.reply(response.text);
                     this.tts.speak(response.text);
+
+                } else if (response.type === 'action_request') {
+                    // ── Capa 1: Conciencia (filtro automático) ──────────────
+                    if (FORBIDDEN_TOOLS.includes(response.tool)) {
+                        const msg = `🛑 *Conciencia bloqueó la acción*\nHerramienta prohibida: \`${response.tool}\``;
+                        await ctx.reply(msg, { parse_mode: 'Markdown' });
+                        await this.brain.chatSession.sendMessage({ message: `[Sistema]: Acción bloqueada por la Conciencia. Herramienta prohibida.` });
+                        return;
+                    }
+                    if (response.params?.path) {
+                        const requestedPath = path.resolve(response.params.path);
+                        if (!requestedPath.startsWith(SANDBOX_DIR)) {
+                            const msg = `🛑 *Conciencia bloqueó la acción*\nAcceso fuera del Sandbox: \`${requestedPath}\``;
+                            await ctx.reply(msg, { parse_mode: 'Markdown' });
+                            await this.brain.chatSession.sendMessage({ message: `[Sistema]: Acción bloqueada. Sandbox violation.` });
+                            return;
+                        }
+                    }
+
+                    // ── Capa 2: Aduana HITL vía Telegram ───────────────────
+                    const approved = await this._askApprovalViaTelegram(ctx, response);
+
+                    let functionResult = '';
+                    if (approved) {
+                        try {
+                            const targetPath = response.params?.path
+                                ? path.resolve(response.params.path)
+                                : SANDBOX_DIR;
+
+                            if (response.tool === 'list_directory') {
+                                const files = await fs.readdir(targetPath);
+                                functionResult = `Contenido de ${targetPath}:\n${files.join('\n')}`;
+                            } else if (response.tool === 'read_file') {
+                                const content = await fs.readFile(targetPath, 'utf8');
+                                const lines = content.split('\n');
+                                functionResult = lines.length > 100
+                                    ? `[Mostrando primeras 100 líneas de ${lines.length}]\n${lines.slice(0, 100).join('\n')}`
+                                    : content;
+                            } else if (response.tool === 'save_memory') {
+                                await this.brain.memoryService.addMemory(response.params.content, response.params.category);
+                                functionResult = 'Recuerdo guardado en Engram.';
+                            }
+                        } catch (err) {
+                            functionResult = `Error ejecutando herramienta: ${err.message}`;
+                        }
+                    } else {
+                        functionResult = 'El usuario DECLINÓ el permiso vía Telegram.';
+                    }
+
+                    // ── Informar resultado al Cerebro y responder ───────────
+                    const contextMsg = `[Sistema - Resultado ${response.tool}]: ${functionResult}`;
+                    const finalResponse = await this.brain.chatSession.sendMessage({ message: contextMsg });
+                    await ctx.reply(finalResponse.text);
+                    this.tts.speak(finalResponse.text);
                 }
             } catch (err) {
                 console.error('[Telegram Gateway Error]:', err.message);
