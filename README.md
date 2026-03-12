@@ -1,68 +1,81 @@
-# SecureClaw 
+# SecureClaw
 
-**Un Agente de IA "Human-First" con Conciencia y Sandboxing Físico.**
+**Un Agente de IA "Human-First" con Conciencia, Sandboxing Físico y Gateway Móvil.**
 
 SecureClaw nace como la antítesis arquitectónica a herramientas como OpenClaw. Mientras que otros agentes asumen control total de tu máquina (con acceso irrestricto a `bash` o sistema de archivos) y esperan no cometer errores, SecureClaw se basa en el principio de **"Seguridad por Defecto"** y **"Desconfianza Arquitectónica"**.
 
-## La Filosofía (El Problema de OpenClaw)
-Darle a un LLM (Large Language Model) acceso de escritura a la terminal de tu sistema operativo es inherentemente peligroso. Las "alucinaciones" o malinterpretaciones pueden llevar a borrados accidentales de repositorios o modificaciones de carpetas críticas del sistema (ej. `System32` o `/etc`). 
+## La Filosofía
 
-## La Solución SecureClaw: Arquitectura de 3 Capas
+Darle a un LLM acceso de escritura a la terminal de tu sistema operativo es inherentemente peligroso. Las alucinaciones o malinterpretaciones pueden llevar a borrados accidentales de repositorios o modificaciones de carpetas críticas del sistema.
 
-SecureClaw no confía en la IA. Todas las peticiones del LLM (El "Cerebro") pasan por dos filtros antes de ejecutarse:
+**La IA no es el riesgo. La confianza ciega en la IA sí lo es.**
 
-1.  **El Cerebro (LLM):** Motor de razonamiento (usando Gemini Flash/Pro) conectado mediante *Function Calling*. Decide qué herramientas necesita usar, pero **no** las ejecuta.
-2.  **La Conciencia (Filtro Físico & Sandboxing):** Una capa de código duro (Node.js/Python) que intercepta la intención del LLM. 
-    *   Si el LLM intenta borrar una carpeta de sistema, la Conciencia arroja un error `RUTA PROHIBIDA`.
-    *   Si el LLM intenta leer fuera de su directorio asignado (`SecureClaw_Sandbox`), la Conciencia arroja un error `SANDBOX VIOLATION`.
-    *   **Crucial:** El LLM ni siquiera sabe que está siendo bloqueado físicamente hasta que recibe el rebote de la función.
-3.  **La Aduana (Human-in-the-Loop):** Para cualquier herramienta que modifique el estado (ej. escribir/borrar), y que haya pasado el filtro de la Conciencia, el sistema frena la ejecución y pide confirmación manual en la consola (`¿Autorizas esta acción? S/N`).
+## Arquitectura de 3 Capas
 
----
+SecureClaw no confía en la IA. Todas las peticiones del LLM pasan por dos filtros antes de ejecutarse:
 
-## Estado Actual de Desarrollo
-
-### ✅ Fase 1: Prototipo CLI & Function Calling
-*   Se reemplazó el mock del LLM por el SDK oficial `@google/genai`.
-*   El agente entiende lenguaje natural y es capaz de invocar herramientas estructuradas (`list_directory`, `read_file`, `delete_system_file`).
-*   Manejo de cuotas (Errores API 429) de forma elegante.
-
-### ✅ Fase 2: Sandboxing Físico y Herramientas Nativas
-*   Migración de herramientas simuladas a herramientas reales usando abstracciones de Node.js (`fs`).
-*   **Jail/Chroot Lógico:** El agente está físicamente encerrado en la carpeta `SecureClaw_Sandbox/`. Cualquier intento de enumerar el disco (`C:\`) o leer `Documentos` es vetado instantáneamente por la Conciencia.
+1. **El Cerebro (LLM):** Motor de razonamiento (Gemini Flash) conectado mediante *Function Calling*. Decide qué herramientas necesita usar, pero **no** las ejecuta directamente.
+2. **La Conciencia (Sandboxing Físico):** Intercepta la intención del LLM antes de cualquier ejecución.
+   - Si el LLM intenta operar fuera del directorio `SecureClaw_Sandbox/`, devuelve `SANDBOX VIOLATION`.
+   - Si el LLM intenta usar herramientas destructivas, devuelve `HERRAMIENTA PROHIBIDA`.
+   - El LLM no sabe que está siendo bloqueado hasta que recibe el rebote.
+3. **La Aduana (Human-in-the-Loop):** Para cualquier acción que haya pasado la Conciencia, el sistema frena y pide confirmación humana — por consola o por botones inline de Telegram desde el celular. **El humano es el último firewall.**
 
 ---
 
-### ✅ Fase 3: Ecosistema y Persistencia (Engram)
-*   **Memoria a Largo Plazo (`memory.js`):** El agente usa `save_memory` para aprender permanentemente reglas o datos del usuario en un archivo `.engram.json`.
+## Estado Actual
 
-### ✅ Fase 4: Optimización de Costos y Arquitectura Local (Pay-as-you-go Ready)
-*   **RAG Local Matemático de $0:** En lugar de inyectar todo el engrama y gastar tokens de API masivamente, usamos `string-similarity` para vectorizar y recuperar localmente solo los 3 recuerdos más relevantes por cada pregunta del usuario.
-*   **Sliding Window:** Poda automática del historial de la sesión (`chatSession.history`) limitándolo a los últimos 10 turnos.
-*   **Paginación de Herramientas:** Truncamiento lógico de respuestas masivas (ej. `read_file` lee máximo 100 líneas por defecto, con parámetros explícitos de `start_line` y `end_line`), evitando facturación excesiva en el *Paid Tier*.
-*   [📄 Leer más en la Documentación de Arquitectura](documentacion/Fases1-4_Core_y_Optimizacion.md)
+### ✅ Fase 1: CLI & Function Calling
+- SDK oficial `@google/genai` con herramientas reales (`list_directory`, `read_file`, `save_memory`).
+- Manejo de cuotas (errores 429) con reintentos automáticos y cuenta regresiva visible.
+
+### ✅ Fase 2: Sandboxing Físico
+- Jail lógico: el agente opera exclusivamente dentro de `SecureClaw_Sandbox/`.
+- Cualquier intento de acceder a rutas del sistema operativo es vetado por la Conciencia.
+
+### ✅ Fase 3: Memoria Persistente (Engram)
+- Memoria a largo plazo cifrada con **AES-256-GCM**. La clave vive en el **Windows Credential Manager** (via `keytar`), nunca en el `.env`.
+- Migración automática: si detecta un engrama en texto plano de versiones anteriores, lo cifra al vuelo.
+- [📄 Documentación de Arquitectura](documentacion/Fases1-4_Core_y_Optimizacion.md)
+
+### ✅ Fase 4: Optimización de Costos (RAG Local)
+- **RAG semántico de $0:** `string-similarity` recupera solo los 3 recuerdos más relevantes por pregunta, sin inflar el contexto.
+- **Sliding Window:** historial de sesión acotado a 10 turnos para mantener costos planos.
+- **Paginación de herramientas:** `read_file` trunca a 100 líneas por defecto, con `start_line`/`end_line` para paginación explícita.
+
+### ✅ Fase 5: Voz (TTS + STT)
+- **TTS:** SAPI5 nativo de Windows vía PowerShell (`tts.js`). Costo cero, sin APIs externas.
+- **STT:** FFmpeg captura el micrófono (DirectShow) y envía el audio a Gemini Multimodal. Sin PyAudio, sin Whisper local.
+- [📄 Bitácora de implementación (con errores y soluciones)](documentacion/Fase5_Voice.md)
+
+### ✅ Fase 6: Wake Word + Gateway Móvil
+- **Wake Word "Jarvis":** Porcupine (Picovoice) corre 100% local, sin internet. Streaming PCM directo desde FFmpeg sin archivos temporales.
+- **Mutex anti-doble activación:** evita que la voz de respuesta del agente reactive el wake word.
+- **Gateway Telegram:** bot con autenticación por ID numérico. La Aduana se adapta a botones inline `[Aprobar] [Denegar]` en el celular.
+- **Daemon silencioso:** instalador VBScript en `shell:startup`. JARVIS arranca invisible con cada login de Windows, con acceso al micrófono (resuelve el Session 0 Isolation de Windows).
+- [📄 Bitácora de implementación](documentacion/Fase6_WakeWord.md)
 
 ---
 
-## Siguientes Pasos y Futuro
+## Instalación
 
-### ✅ Fase 5: Modo JARVIS (Voz y Oídos - Completada)
-Añadimos un bucle de interacción por voz real al CLI:
-*   **Voz (Generación):** Usa PowerShell (`System.Speech.Synthesis`) sobre `tts.js` para hablar usando SAPI5 en Windows (sin latencia, costo cero).
-*   **Oídos (Comprensión):** Captura el micrófono nativo en Windows usando `fluent-ffmpeg` con FFMPEG y envía el `.wav` al API File de `@google/genai` (Multimodal STT). Evitando así lidiar localmente con librerías frágiles como PyAudio o Whisper.
-*   [📄 Leer Implementación Técnica](documentacion/Fase5_Voice.md)
+```bash
+git clone https://github.com/tu-usuario/SecureClaw.git
+cd SecureClaw
+npm install
+cp .env.example .env
+# Editar .env con tus claves (ver instrucciones dentro del archivo)
+node index.js
+```
+
+**Requisitos:** Node.js 18+, Windows (TTS y Wake Word usan APIs nativas de Windows).
 
 ---
 
-### Fase 6: Autonomía Estructurada
-Nuestra meta es transformar este prototipo rígido en un agente completamente proactivo:
+## Próximo: Fase 7 — Cerebro Dual (Nube + Local)
 
-### 1. Spec-Driven Development (SDD) Integrado
-Antes de escribir cualquier código en el Sandbox, SecureClaw será forzado a redactar y pedir aprobación para un plan (como lo hacemos ahora en las herramientas, pero sistematizado para todo el proyecto).
+Separación del agente en dos nodos independientes:
+- **El Cerebro (Firebase Cloud Functions):** atiende Telegram desde la nube, 24/7, sin depender de que la PC esté encendida.
+- **La Garra (Node local):** sigue siendo la fuente de verdad. Engram cifrado físicamente en tu disco. Se conecta al Cerebro via Firestore como bus de mensajes efímero.
 
-### 3. Contextualización Segura de Micro-Agentes
-Responderemos a la pregunta: *"¿Cómo le doy poder de leer mis correos sin darle mi clave real de Gmail?"*
-Construiremos scripts intermedios o "Micro-Agentes Especialistas". SecureClaw nunca tendrá la clave; él solo invocará una herramienta `leer_resumen_correos()`. Un script independiente (y con permisos granulares solo de lectura) leerá el correo de forma segura y le pasará un bloque de texto pre-digerido a SecureClaw. 
-
-### 4. Interfaz Visual 
-Migrar del CLI (`node index.js`) a una PWA o Bot de Telegram que maneje la "Aduana Humana" mediante botones interactivos, haciendo que la revisión de seguridad sea un clic en el celular.
+La soberanía del Engram permanece local. La nube es solo un router.
