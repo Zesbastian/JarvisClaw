@@ -5,6 +5,11 @@ node_modules/
 *.wav
 temp_audio.wav
 
+# Credenciales Firebase (NUNCA al repo)
+serviceAccount.json
+brain/functions/node_modules/
+brain/.env
+
 # Datos de memoria del agente (cifrados, pero machine-specific)
 .engram.json
 
