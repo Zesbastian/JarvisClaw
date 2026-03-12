@@ -126,7 +126,7 @@ class TelegramGateway {
 
         // Lanzar el bot en modo polling (long-polling, no requiere servidor)
         this.bot.launch();
-        console.log(`\n📱 [Telegram Gateway]: Bot activo en @Zesbastianbot. Abrilo en Telegram y escribile!`);
+        console.log(`\n📱 [Telegram Gateway]: Bot activo. Abrilo en Telegram y escribile!`);
 
         // Graceful shutdown
         process.once('SIGINT', () => this.bot.stop('SIGINT'));

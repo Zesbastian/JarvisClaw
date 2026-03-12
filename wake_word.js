@@ -10,8 +10,8 @@ import { spawn } from 'child_process';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import { EventEmitter } from 'events';
 
-// Dispositivo de micrófono (mismo que el STT)
-const MIC_DEVICE = 'Micrófono (Realtek High Definition Audio)';
+// Dispositivo de micrófono (configurable via MIC_DEVICE en .env)
+const MIC_DEVICE = process.env.MIC_DEVICE || 'Micrófono (Realtek High Definition Audio)';
 const PICOVOICE_KEY = process.env.PICOVOICE_KEY;
 
 class WakeWordListener extends EventEmitter {

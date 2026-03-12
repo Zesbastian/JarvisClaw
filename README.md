@@ -1,4 +1,4 @@
-# SecureClaw 🛡️🤖
+# SecureClaw 
 
 **Un Agente de IA "Human-First" con Conciencia y Sandboxing Físico.**
 
@@ -40,7 +40,7 @@ SecureClaw no confía en la IA. Todas las peticiones del LLM (El "Cerebro") pasa
 *   **RAG Local Matemático de $0:** En lugar de inyectar todo el engrama y gastar tokens de API masivamente, usamos `string-similarity` para vectorizar y recuperar localmente solo los 3 recuerdos más relevantes por cada pregunta del usuario.
 *   **Sliding Window:** Poda automática del historial de la sesión (`chatSession.history`) limitándolo a los últimos 10 turnos.
 *   **Paginación de Herramientas:** Truncamiento lógico de respuestas masivas (ej. `read_file` lee máximo 100 líneas por defecto, con parámetros explícitos de `start_line` y `end_line`), evitando facturación excesiva en el *Paid Tier*.
-*   [📄 Leer más en la Documentación de Arquitectura](documentacion/01_evolucion_arquitectura.md)
+*   [📄 Leer más en la Documentación de Arquitectura](documentacion/Fases1-4_Core_y_Optimizacion.md)
 
 ---
 

@@ -21,6 +21,9 @@ const memoryService = new MemoryService();
 // Sandbox Config
 const SANDBOX_DIR = path.resolve(process.cwd(), 'SecureClaw_Sandbox');
 
+// Dispositivo de micrófono (configurable via MIC_DEVICE en .env)
+const MIC_DEVICE = process.env.MIC_DEVICE || 'Micrófono (Realtek High Definition Audio)';
+
 // Instanciar el cliente usando la variable de entorno
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -339,7 +342,7 @@ const startApp = async () => {
 
         await new Promise((resolve) => {
             ffmpeg()
-                .input('audio=Micrófono (Realtek High Definition Audio)')
+                .input(`audio=${MIC_DEVICE}`)
                 .inputFormat('dshow')
                 .audioFrequency(16000)
                 .audioChannels(1)
@@ -383,7 +386,7 @@ const startApp = async () => {
 
                 await new Promise((resolve, reject) => {
                     ffmpeg()
-                        .input('audio=Micrófono (Realtek High Definition Audio)') // Localizado de la terminal del usuario
+                        .input(`audio=${MIC_DEVICE}`) // Localizado de la terminal del usuario
                         .inputFormat('dshow')
                         .audioFrequency(16000)
                         .audioChannels(1)

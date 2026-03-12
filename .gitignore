@@ -4,3 +4,13 @@ node_modules/
 .vscode/
 *.wav
 temp_audio.wav
+
+# Datos de memoria del agente (cifrados, pero machine-specific)
+.engram.json
+
+# Documentación interna (no pública)
+documentacion/Analisis_Competitivo.md
+documentacion/implementation_plan.md
+documentacion/task.md
+documentacion/linkedin_teaser.md
+documentacion/walkthrough.md
