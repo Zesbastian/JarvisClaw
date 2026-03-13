@@ -11,11 +11,12 @@ async function install() {
     const projectDir = process.cwd();
     const nodePath = process.execPath; // Ruta absoluta real del Node.js actual
     
-    // El VBScript corre el comando de Node de manera invisible (WindowStyle = 0, false = no esperar)
+    // El VBScript arranca ambos procesos de forma invisible al iniciar Windows
     const vbsContent = `
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.CurrentDirectory = "${projectDir}"
 WshShell.Run """${nodePath}"" ""${path.join(projectDir, 'index.js')}""", 0, false
+WshShell.Run """${nodePath}"" ""${path.join(projectDir, 'garra.js')}""", 0, false
     `.trim();
 
     try {

@@ -27,13 +27,14 @@ initializeApp();
 // ── Herramientas que Gemini puede solicitar ───────────────────────────────────
 const TOOLS = [{
     functionDeclarations: [
+        // ── Archivos y directorios ──────────────────────────────────────────
         {
             name: 'list_directory',
-            description: 'Lista los archivos y carpetas en el directorio sandbox de la PC del usuario.',
+            description: 'Lista los archivos y carpetas en un directorio de la PC del usuario.',
             parameters: {
                 type: 'OBJECT',
                 properties: {
-                    path: { type: 'STRING', description: 'Ruta dentro del sandbox (opcional)' }
+                    path: { type: 'STRING', description: 'Ruta del directorio (opcional, default: directorio actual)' }
                 },
                 required: []
             }
@@ -44,7 +45,7 @@ const TOOLS = [{
             parameters: {
                 type: 'OBJECT',
                 properties: {
-                    path:       { type: 'STRING',  description: 'Ruta del archivo' },
+                    path:       { type: 'STRING',  description: 'Ruta absoluta del archivo' },
                     start_line: { type: 'INTEGER', description: 'Línea inicial (paginación)' },
                     end_line:   { type: 'INTEGER', description: 'Línea final (paginación)' }
                 },
@@ -52,13 +53,112 @@ const TOOLS = [{
             }
         },
         {
+            name: 'write_file',
+            description: 'Crea o sobreescribe un archivo en la PC del usuario.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    path:    { type: 'STRING', description: 'Ruta absoluta del archivo' },
+                    content: { type: 'STRING', description: 'Contenido a escribir' }
+                },
+                required: ['path', 'content']
+            }
+        },
+        {
+            name: 'delete_file',
+            description: 'Elimina un archivo o directorio en la PC del usuario.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    path:      { type: 'STRING',  description: 'Ruta absoluta del archivo o directorio' },
+                    recursive: { type: 'BOOLEAN', description: 'Si es true, elimina directorios con contenido' }
+                },
+                required: ['path']
+            }
+        },
+        {
+            name: 'create_directory',
+            description: 'Crea un directorio (y subdirectorios necesarios) en la PC del usuario.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    path: { type: 'STRING', description: 'Ruta absoluta del directorio a crear' }
+                },
+                required: ['path']
+            }
+        },
+        // ── Sistema operativo ───────────────────────────────────────────────
+        {
+            name: 'run_command',
+            description: 'Ejecuta un comando PowerShell en la PC del usuario. Puede hacer casi cualquier cosa: instalar software, modificar configuraciones, mover archivos, consultar el sistema, etc.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    command: { type: 'STRING', description: 'Comando PowerShell a ejecutar' }
+                },
+                required: ['command']
+            }
+        },
+        {
+            name: 'get_system_info',
+            description: 'Obtiene información del sistema: CPU, RAM, discos, uptime y OS de la PC del usuario.',
+            parameters: { type: 'OBJECT', properties: {}, required: [] }
+        },
+        {
+            name: 'list_processes',
+            description: 'Lista los 20 procesos que más CPU consumen en la PC del usuario.',
+            parameters: { type: 'OBJECT', properties: {}, required: [] }
+        },
+        {
+            name: 'kill_process',
+            description: 'Termina un proceso en la PC del usuario por nombre o PID.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    name: { type: 'STRING',  description: 'Nombre del proceso (ej: chrome, notepad)' },
+                    pid:  { type: 'INTEGER', description: 'PID del proceso' }
+                },
+                required: []
+            }
+        },
+        {
+            name: 'open_app',
+            description: 'Abre una aplicación, archivo o URL en la PC del usuario.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    app: { type: 'STRING', description: 'Nombre del ejecutable, ruta de archivo, o URL' }
+                },
+                required: ['app']
+            }
+        },
+        // ── Enviar archivos ──────────────────────────────────────────────────
+        {
+            name: 'send_file',
+            description: 'Envía un archivo de la PC del usuario directamente al chat de Telegram (imágenes, documentos, audio, video, etc.).',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    path: { type: 'STRING', description: 'Ruta absoluta del archivo a enviar' }
+                },
+                required: ['path']
+            }
+        },
+        // ── Captura de pantalla ─────────────────────────────────────────────
+        {
+            name: 'take_screenshot',
+            description: 'Toma una captura de pantalla del escritorio de la PC del usuario y la envía directamente al chat de Telegram.',
+            parameters: { type: 'OBJECT', properties: {}, required: [] }
+        },
+        // ── Memoria cifrada ─────────────────────────────────────────────────
+        {
             name: 'save_memory',
-            description: 'Guarda un recuerdo permanente en el Engram local del usuario.',
+            description: 'Guarda un recuerdo permanente en el Engram local cifrado del usuario.',
             parameters: {
                 type: 'OBJECT',
                 properties: {
                     content:  { type: 'STRING', description: 'Contenido del recuerdo' },
-                    category: { type: 'STRING', description: 'Categoría (identity, preference, rule, context)' }
+                    category: { type: 'STRING', description: 'Categoría: identity, preference, rule, context' }
                 },
                 required: ['content', 'category']
             }
@@ -148,10 +248,12 @@ export const telegramWebhook = onRequest(
             await tg(token, 'sendChatAction', { chat_id: chatId, action: 'typing' });
 
             // ── Cargar Cloud_Context (quién es el usuario) ────────────────────────
-            const ctxSnap = await db.collection('Cloud_Context').doc(String(userId)).get();
-            const ctx = ctxSnap.exists
-                ? ctxSnap.data()
-                : { userName: 'Usuario', agentPersona: 'JARVIS' };
+            const [ctxSnap, pcSnap] = await Promise.all([
+                db.collection('Cloud_Context').doc(String(userId)).get(),
+                db.collection('Cloud_Context').doc('pc_info').get()
+            ]);
+            const ctx    = ctxSnap.exists ? ctxSnap.data() : { userName: 'Usuario', agentPersona: 'JARVIS' };
+            const pcInfo = pcSnap.exists  ? pcSnap.data()  : {};
 
             // ── Cargar historial reciente de conversación (Sliding Window) ─────────
             const histSnap = await db
@@ -169,10 +271,14 @@ export const telegramWebhook = onRequest(
             // ── Procesar con Gemini ───────────────────────────────────────────────
             const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY.value() });
 
+            const pcHint = pcInfo.homeDir
+                ? `\n\nPC conectada: usuario="${pcInfo.username}", home="${pcInfo.homeDir}", hostname="${pcInfo.hostname}". IMPORTANTE: Siempre usá rutas absolutas completas al llamar herramientas (ej: "${pcInfo.homeDir}\\Pictures\\foto.png"). Nunca uses {username}, ~, ni rutas relativas.`
+                : '';
+
             const systemPrompt = `Eres ${ctx.agentPersona || 'JARVIS'}, el asistente personal de ${ctx.userName || 'tu usuario'}.
 Respondés desde la nube vía Telegram. Tenés acceso a herramientas que ejecutan operaciones en la PC del usuario (con su aprobación previa).
 Si el usuario pide acceso a archivos o memoria, usa las herramientas disponibles.
-Si no necesitás herramientas, respondé directamente.${historyText}`;
+Si no necesitás herramientas, respondé directamente.${pcHint}${historyText}`;
 
             const chatSession = ai.chats.create({
                 model: 'gemini-2.5-flash',
