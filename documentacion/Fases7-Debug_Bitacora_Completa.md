@@ -309,22 +309,248 @@ Ejecutar una sola vez: `node install_daemon.js`
 
 ---
 
+---
+
+## FASE 7.3 — Herramientas de Control Avanzado de PC
+
+**Período:** 2026-03-13
+**Objetivo:** Darle a JARVIS control total sobre la PC: mouse, teclado, multimedia, archivos, webcam, procesos.
+
+### Herramientas agregadas (19 total)
+
+| Herramienta | Descripción | Implementación |
+|---|---|---|
+| `media_control` | Play/pause/next/prev/volumen/mute | PowerShell `SendKeys` con teclas multimedia globales |
+| `send_keys_to_app` | Focaliza una ventana y envía shortcuts | PowerShell `SetForegroundWindow` + `SendKeys` |
+| `mouse_click` | Click izquierdo/derecho/doble en coordenadas (x,y) | PowerShell `DllImport user32.dll` + `mouse_event` |
+| `get_clipboard` | Lee el portapapeles | PowerShell `Get-Clipboard` |
+| `set_clipboard` | Escribe en el portapapeles | PowerShell `Set-Clipboard` |
+| `type_text` | Escribe texto en la ventana activa | PowerShell `SendKeys` |
+| `get_active_window` | Obtiene la ventana con foco actual | PowerShell `GetForegroundWindow` |
+| `search_files` | Busca archivos por patrón en el sistema | PowerShell `Get-ChildItem -Recurse` |
+| `download_file` | Descarga URL a un archivo en disco | PowerShell `Invoke-WebRequest` |
+
+### Bug #10 — Antivirus bloquea Add-Type con DllImport
+
+**Síntoma:** `Este script contiene elementos malintencionados y ha sido bloqueado por el software antivirus.`
+
+**Causa:** El AV de Windows 11 detecta el patrón `Add-Type @"... DllImport("user32.dll") ..."@` como código potencialmente malicioso. Este patrón es común en malware de captura de pantalla (spyware).
+
+**Impacto:** La versión JPEG de `take_screenshot` (con `EncoderParameters`) fue bloqueada. La versión original PNG (sin `EncoderParameters`) no fue bloqueada.
+
+**Fix — compresión del lado de Node.js:**
+
+En lugar de comprimir/redimensionar en PowerShell (bloqueado por AV), se usa `ffmpeg` desde Node.js:
+
+```javascript
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import ffmpeg from 'fluent-ffmpeg';
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+// 1. Captura PNG con PowerShell (sin DllImport extra → no bloqueado)
+await execAsync(psCmdPng, { shell: 'powershell.exe' });
+
+// 2. Comprimir a JPEG 1280px en Node.js (ffmpeg — el AV no lo inspecciona)
+await compressScreenshot(pngFile, jpgFile); // -q:v 5 -vf scale=1280:-1
+
+// 3. Enviar JPEG (~150KB) al chat de Telegram
+await bot.telegram.sendPhoto(chatId, { source: jpgFile });
+
+// 4. Guardar base64 en Firestore para que Gemini vea la pantalla
+const jpgBuffer = await fs.readFile(jpgFile);
+await db.collection('Cloud_Context').doc('last_screenshot').set({
+    base64: jpgBuffer.toString('base64'),
+    mimeType: 'image/jpeg',
+    timestamp: Date.now()
+});
+```
+
+**Resultado:** JPEG de ~150KB generado, almacenado en Firestore, Gemini puede ver la pantalla para determinar coordenadas antes de `mouse_click`.
+
+---
+
+### Bug #11 — mouse_click no hacía nada visible
+
+**Síntoma:** JARVIS ejecutaba `mouse_click` y devolvía "Click izquierdo en (X, Y)" pero no pasaba nada en la pantalla.
+
+**Causa:** Gemini adivinaba las coordenadas sin haber visto la pantalla. Sin un screenshot previo, Gemini inventaba valores arbitrarios que no correspondían a ningún elemento real.
+
+**Fix — regla en system prompt:**
+
+```javascript
+const visionHint = recentScreenshot
+    ? `Analizá la imagen para determinar coordenadas exactas antes de mouse_click. NUNCA adivines coordenadas.`
+    : `REGLA CRÍTICA: Si el usuario pide hacer click en algo, PRIMERO llamá a take_screenshot. NUNCA uses mouse_click con coordenadas adivinadas.`;
+```
+
+**Flujo correcto:**
+1. Usuario: *"Hace click en el botón de búsqueda"*
+2. JARVIS: → `take_screenshot` (ve la pantalla)
+3. JARVIS: analiza la imagen, identifica el elemento, determina coordenadas exactas
+4. JARVIS: → `mouse_click(x, y)` con coordenadas reales
+
+---
+
+## FASE 7.4 — Visión: Gemini Ve la Pantalla
+
+**Objetivo:** Gemini puede analizar screenshots para determinar coordenadas de UI sin pedirle al usuario que las especifique.
+
+### Implementación
+
+**En garra.js:**
+- `take_screenshot` captura PNG con PowerShell, comprime a JPEG con ffmpeg
+- Guarda el JPEG como base64 en `Cloud_Context/last_screenshot` en Firestore
+- Screenshot válido por 5 minutos
+
+**En brain/functions/index.js:**
+```javascript
+const screenshotData = screenshotSnap.exists ? screenshotSnap.data() : null;
+const recentScreenshot = screenshotData && (Date.now() - screenshotData.timestamp) < 300_000
+    ? screenshotData : null;
+
+// Si hay screenshot reciente, enviarlo como imagen inline a Gemini
+const geminiMessage = recentScreenshot?.base64
+    ? [{ text }, { inlineData: { mimeType: 'image/jpeg', data: recentScreenshot.base64 } }]
+    : text;
+```
+
+**Resultado:** Gemini recibe la imagen junto al texto del usuario y puede:
+- Identificar botones, campos de texto, menús
+- Determinar coordenadas (x,y) exactas
+- Ejecutar `mouse_click` con precisión sin preguntarle al usuario
+
+---
+
+## FASE 7.5 — Proactividad: Briefing Matutino y Recordatorios
+
+**Objetivo:** JARVIS no espera órdenes — envía información útil proactivamente.
+
+### Cloud Scheduler — Briefing Matutino
+
+**Implementación:** `firebase-functions/v2/scheduler` con `onSchedule`
+
+```javascript
+export const morningBriefing = onSchedule({
+    schedule:  '0 8 * * *',           // 8:00 AM todos los días
+    timeZone:  'America/Argentina/Mendoza',
+    secrets:   [TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_ID, OPENWEATHER_API_KEY]
+}, async () => {
+    // 1. Fetch clima en Mendoza (OpenWeatherMap API)
+    // 2. Leer recordatorios del día desde Firestore
+    // 3. Construir y enviar mensaje consolidado
+});
+```
+
+**Contenido del briefing:**
+```
+🌅 ¡Buenos días, Sebastián!
+
+📅 Viernes 13 de marzo
+
+🌦️ Mendoza:
+☀️ Despejado — 28°C (sensación 30°C)
+💧 Humedad: 35% | 💨 Viento: 12 km/h
+
+📋 Recordatorios de hoy:
+• Llamar al médico a las 10:00
+
+JARVIS listo para lo que necesites.
+```
+
+**Comando `/briefing`:** Disponible para disparar el resumen en cualquier momento sin esperar las 8am.
+
+### Herramientas de Recordatorios (Cloud-side, sin La Garra)
+
+| Herramienta | Descripción |
+|---|---|
+| `set_reminder` | Guarda recordatorio con mensaje, fecha/hora opcional y repetición |
+| `list_reminders` | Lista todos los recordatorios activos |
+| `delete_reminder` | Elimina recordatorio por índice |
+
+**Decisión arquitectónica:** Los recordatorios se manejan directamente en el Brain (Cloud Function) sin necesidad de La Garra. El Brain detecta si la herramienta es "cloud-side" o "PC-side" antes de crear un PC_Job:
+
+```javascript
+const CLOUD_TOOLS = new Set(['set_reminder', 'list_reminders', 'delete_reminder']);
+
+if (CLOUD_TOOLS.has(call.name)) {
+    // Ejecutar directamente en la Cloud Function
+    const remRef = db.collection('Reminders').doc(String(userId)).collection('items');
+    // ...
+} else {
+    // Crear PC_Job para La Garra
+    const jobRef = await db.collection('PC_Jobs').add({ ... });
+}
+```
+
+**Uso natural (texto):**
+- *"Recordame comprar pan mañana a las 9"*
+- *"Qué recordatorios tengo"*
+- *"Borrá el recordatorio 2"*
+
+**Secret requerido:** `OPENWEATHER_API_KEY` (cuenta gratuita en openweathermap.org)
+
+---
+
 ## ESTADO ACTUAL DEL SISTEMA
 
 ```
 ✅ Fase 7.1 — Brain Cloud: JARVIS en Telegram 24/7
-✅ Fase 7.2 — La Garra: 13 herramientas, Aduana HITL, Conciencia
+✅ Fase 7.2 — La Garra: 19 herramientas, Aduana HITL, Conciencia
+✅ Fase 7.3 — Control avanzado de PC: mouse, teclado, multimedia, archivos
+✅ Fase 7.4 — Visión: Gemini ve la pantalla vía ffmpeg + Firestore base64
+✅ Fase 7.5 — Proactividad: briefing matutino, clima, recordatorios
 ✅ Markdown estabilizado: escapeMd + backticks + fallback universal
 ✅ Paths corregidos: pc_info en Firestore → rutas absolutas correctas
 ✅ Daemon: arranque automático en Windows login
-✅ take_screenshot: foto del escritorio directo al chat
-✅ send_file: envío de cualquier archivo (imagen/video/audio/doc)
 🔲 Fase 8 — App Android Kotlin
-🔲 Fase 8.1 — Proactividad (clima, recordatorios)
 ```
+
+---
+
+## HERRAMIENTAS COMPLETAS — REFERENCIA RÁPIDA
+
+### Herramientas de PC (La Garra — requieren Aduana)
+
+| Herramienta | Parámetros clave |
+|---|---|
+| `list_directory` | `path?` |
+| `read_file` | `path`, `start_line?`, `end_line?` |
+| `write_file` | `path`, `content` |
+| `delete_file` | `path`, `recursive?` |
+| `create_directory` | `path` |
+| `run_command` | `command` (PowerShell) |
+| `get_system_info` | — |
+| `list_processes` | — |
+| `kill_process` | `pid` o `name` |
+| `open_app` | `app` (nombre, ruta o URL) |
+| `take_screenshot` | — |
+| `send_file` | `path` (absoluta) |
+| `save_memory` | `content`, `category` |
+| `media_control` | `action`: play_pause/next/prev/volume_up/volume_down/mute |
+| `send_keys_to_app` | `app`, `keys` |
+| `mouse_click` | `x`, `y`, `button?` (left/right/double) |
+| `get_clipboard` | — |
+| `set_clipboard` | `text` |
+| `type_text` | `text` |
+| `get_active_window` | — |
+| `search_files` | `pattern`, `path?` |
+| `download_file` | `url`, `destination` |
+
+### Herramientas Cloud (Brain — sin Aduana, instantáneas)
+
+| Herramienta | Parámetros clave |
+|---|---|
+| `set_reminder` | `message`, `datetime?` (ISO 8601), `repeat?` |
+| `list_reminders` | — |
+| `delete_reminder` | `index` |
 
 ---
 
 ## PRÓXIMAS ETAPAS
 
-Ver `Fases7-8_Cerebro_Dual_y_Android.md` para el roadmap completo de Fase 8.
+Ver `Fases7-8_Cerebro_Dual_y_Android.md` para el roadmap completo.
+
+**Pendiente inmediato:**
+1. Probar `/briefing` y recordatorios (requiere deploy con `OPENWEATHER_API_KEY`)
+2. Probar visión + mouse_click (tomar screenshot → Gemini analiza → click)
+3. Fase 8 — App Android Kotlin

@@ -12,15 +12,17 @@
  */
 
 import { onRequest } from 'firebase-functions/v2/https';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { GoogleGenAI } from '@google/genai';
 import { defineSecret } from 'firebase-functions/params';
 
 // ── Secretos (configurar con: firebase functions:secrets:set NOMBRE) ──────────
-const GEMINI_API_KEY      = defineSecret('GEMINI_API_KEY');
-const TELEGRAM_BOT_TOKEN  = defineSecret('TELEGRAM_BOT_TOKEN');
-const TELEGRAM_ALLOWED_ID = defineSecret('TELEGRAM_ALLOWED_ID');
+const GEMINI_API_KEY       = defineSecret('GEMINI_API_KEY');
+const TELEGRAM_BOT_TOKEN   = defineSecret('TELEGRAM_BOT_TOKEN');
+const TELEGRAM_ALLOWED_ID  = defineSecret('TELEGRAM_ALLOWED_ID');
+const OPENWEATHER_API_KEY  = defineSecret('OPENWEATHER_API_KEY');
 
 initializeApp();
 
@@ -242,6 +244,22 @@ const TOOLS = [{
             description: 'Toma una captura de pantalla del escritorio de la PC del usuario y la envía directamente al chat de Telegram.',
             parameters: { type: 'OBJECT', properties: {}, required: [] }
         },
+        {
+            name: 'take_webcam_photo',
+            description: 'Toma una foto con la webcam/cámara de la PC y la envía al chat de Telegram.',
+            parameters: { type: 'OBJECT', properties: {}, required: [] }
+        },
+        {
+            name: 'record_audio',
+            description: 'Graba audio del micrófono de la PC durante N segundos y lo envía al chat.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    seconds: { type: 'INTEGER', description: 'Duración en segundos (máx 30, default 5)' }
+                },
+                required: []
+            }
+        },
         // ── Memoria cifrada ─────────────────────────────────────────────────
         {
             name: 'save_memory',
@@ -253,6 +271,36 @@ const TOOLS = [{
                     category: { type: 'STRING', description: 'Categoría: identity, preference, rule, context' }
                 },
                 required: ['content', 'category']
+            }
+        },
+        // ── Recordatorios (ejecutados en la nube, sin La Garra) ─────────────
+        {
+            name: 'set_reminder',
+            description: 'Guarda un recordatorio. El briefing matutino los incluirá o se enviará un mensaje cuando llegue la hora.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    message:  { type: 'STRING', description: 'Texto del recordatorio' },
+                    datetime: { type: 'STRING', description: 'Fecha y hora en formato ISO 8601 (ej: 2026-03-14T09:00:00). Opcional.' },
+                    repeat:   { type: 'STRING', description: 'Repetición: daily, weekly, monthly. Opcional.' }
+                },
+                required: ['message']
+            }
+        },
+        {
+            name: 'list_reminders',
+            description: 'Lista todos los recordatorios activos del usuario.',
+            parameters: { type: 'OBJECT', properties: {}, required: [] }
+        },
+        {
+            name: 'delete_reminder',
+            description: 'Elimina un recordatorio por su número de índice (1, 2, 3...).',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    index: { type: 'INTEGER', description: 'Número del recordatorio a eliminar (ver list_reminders)' }
+                },
+                required: ['index']
             }
         }
     ]
@@ -336,6 +384,34 @@ export const telegramWebhook = onRequest(
                 return res.status(200).send('OK');
             }
 
+            // Comando /briefing — dispara el resumen matutino ahora
+            if (text === '/briefing') {
+                const db2 = getFirestore();
+                const weatherKey = OPENWEATHER_API_KEY.value();
+                let weatherBlock = '🌡️ _(clima no disponible)_';
+                try {
+                    const wr = await fetch(`https://api.openweathermap.org/data/2.5/weather?q=Mendoza,AR&appid=${weatherKey}&units=metric&lang=es`);
+                    const w  = await wr.json();
+                    const icons = { Clear:'☀️', Clouds:'☁️', Rain:'🌧️', Drizzle:'🌦️', Thunderstorm:'⛈️', Snow:'❄️', Mist:'🌫️', Fog:'🌫️' };
+                    const icon = icons[w.weather[0].main] || '🌡️';
+                    const desc = w.weather[0].description;
+                    weatherBlock = `${icon} *${desc.charAt(0).toUpperCase()+desc.slice(1)}* — ${Math.round(w.main.temp)}°C (sensación ${Math.round(w.main.feels_like)}°C)\n💧 ${w.main.humidity}% | 💨 ${Math.round((w.wind?.speed||0)*3.6)} km/h`;
+                } catch {}
+                let remindersBlock = '';
+                try {
+                    const today = new Date(); today.setHours(0,0,0,0);
+                    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate()+1);
+                    const snap = await db2.collection('Reminders').doc(String(chatId)).collection('items').where('active','==',true).get();
+                    const todayR = snap.docs.map(d=>d.data()).filter(r=>{ if(!r.datetime) return false; const d=new Date(r.datetime); return d>=today&&d<tomorrow; });
+                    if (todayR.length>0) remindersBlock = `\n\n📋 *Hoy:*\n${todayR.map(r=>`• ${r.message}`).join('\n')}`;
+                } catch {}
+                const now  = new Date(new Date().toLocaleString('en-US',{timeZone:'America/Argentina/Mendoza'}));
+                const date = now.toLocaleDateString('es-AR',{weekday:'long',day:'numeric',month:'long'});
+                const msg  = `🌅 *Briefing manual*\n\n📅 *${date.charAt(0).toUpperCase()+date.slice(1)}*\n\n🌦️ *Mendoza:*\n${weatherBlock}${remindersBlock}\n\n_JARVIS listo para lo que necesites._`;
+                await tg(token, 'sendMessage', { chat_id: chatId, text: msg, parse_mode: 'Markdown' });
+                return res.status(200).send('OK');
+            }
+
             // Indicador de escritura
             await tg(token, 'sendChatAction', { chat_id: chatId, action: 'typing' });
 
@@ -373,8 +449,8 @@ export const telegramWebhook = onRequest(
                 : '';
 
             const visionHint = recentScreenshot
-                ? `\n\nSe adjunta una captura de pantalla reciente de la PC (${recentScreenshot.dimensions}). Podés analizarla para identificar elementos, determinar coordenadas (x,y) y llamar a mouse_click sin pedirle las coordenadas al usuario.`
-                : '';
+                ? `\n\nSe adjunta una captura de pantalla reciente de la PC. Analizá la imagen para identificar elementos de UI y determinar sus coordenadas exactas (x,y) antes de llamar a mouse_click. NUNCA adivines coordenadas — siempre basate en la imagen adjunta.`
+                : `\n\nREGLA CRÍTICA: Si el usuario pide hacer click en algo, PRIMERO llamá a take_screenshot para ver el estado actual de la pantalla. NUNCA uses mouse_click con coordenadas adivinadas — siempre analizá la imagen primero.`;
 
             const systemPrompt = `Eres ${ctx.agentPersona || 'JARVIS'}, el asistente personal de ${ctx.userName || 'tu usuario'}.
 Respondés desde la nube vía Telegram. Tenés acceso a herramientas que ejecutan operaciones en la PC del usuario (con su aprobación previa).
@@ -405,30 +481,79 @@ Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${hi
             await convRef.add({ role: 'user', content: text, timestamp: Timestamp.now() });
 
             // ── Manejar respuesta ─────────────────────────────────────────────────
+            // ── Herramientas cloud (sin La Garra — ejecutadas aquí mismo) ─────────
+            const CLOUD_TOOLS = new Set(['set_reminder', 'list_reminders', 'delete_reminder']);
+
             if (geminiResponse.functionCalls?.length > 0) {
                 const call = geminiResponse.functionCalls[0];
 
-                const jobRef = await db.collection('PC_Jobs').add({
-                    chatId:    chatId,
-                    userId:    String(userId),
-                    tool:      call.name,
-                    params:    call.args || {},
-                    status:    'pending',
-                    createdAt: Timestamp.now(),
-                    expiresAt: Timestamp.fromMillis(Date.now() + 120_000)
-                });
+                if (CLOUD_TOOLS.has(call.name)) {
+                    const remRef = db.collection('Reminders').doc(String(userId)).collection('items');
+                    let cloudResult = '';
 
-                await convRef.add({
-                    role:      'assistant',
-                    content:   `[Solicitó herramienta: ${call.name} — Job: ${jobRef.id}]`,
-                    timestamp: Timestamp.now()
-                });
+                    if (call.name === 'set_reminder') {
+                        await remRef.add({
+                            message:   call.args.message,
+                            datetime:  call.args.datetime || null,
+                            repeat:    call.args.repeat   || null,
+                            createdAt: Timestamp.now(),
+                            active:    true
+                        });
+                        cloudResult = `✅ Recordatorio guardado: "${call.args.message}"` +
+                            (call.args.datetime ? ` para el ${call.args.datetime}` : '');
+                    }
 
-                await tg(token, 'sendMessage', {
-                    chat_id:    chatId,
-                    text:       `⏳ *JARVIS necesita acceso a tu PC*\n\nHerramienta: \`${call.name}\`\n\nTu dispositivo local enviará los botones de aprobación en un momento.`,
-                    parse_mode: 'Markdown'
-                });
+                    if (call.name === 'list_reminders') {
+                        const snap = await remRef.where('active', '==', true).orderBy('createdAt').get();
+                        if (snap.empty) {
+                            cloudResult = 'No tenés recordatorios activos.';
+                        } else {
+                            const lines = snap.docs.map((d, i) => {
+                                const r = d.data();
+                                return `${i + 1}. ${r.message}${r.datetime ? ` — ${r.datetime}` : ''}`;
+                            }).join('\n');
+                            cloudResult = `📋 *Recordatorios activos:*\n${lines}`;
+                        }
+                    }
+
+                    if (call.name === 'delete_reminder') {
+                        const snap = await remRef.where('active', '==', true).orderBy('createdAt').get();
+                        const idx  = (call.args.index || 1) - 1;
+                        if (idx >= 0 && idx < snap.docs.length) {
+                            await snap.docs[idx].ref.update({ active: false });
+                            cloudResult = '🗑️ Recordatorio eliminado.';
+                        } else {
+                            cloudResult = '❌ Índice inválido. Usá list_reminders para ver los disponibles.';
+                        }
+                    }
+
+                    await tg(token, 'sendMessage', { chat_id: chatId, text: cloudResult, parse_mode: 'Markdown' });
+                    await convRef.add({ role: 'assistant', content: cloudResult, timestamp: Timestamp.now() });
+
+                } else {
+                    // ── Herramienta de PC → crear job para La Garra ──────────────
+                    const jobRef = await db.collection('PC_Jobs').add({
+                        chatId:    chatId,
+                        userId:    String(userId),
+                        tool:      call.name,
+                        params:    call.args || {},
+                        status:    'pending',
+                        createdAt: Timestamp.now(),
+                        expiresAt: Timestamp.fromMillis(Date.now() + 120_000)
+                    });
+
+                    await convRef.add({
+                        role:      'assistant',
+                        content:   `[Solicitó herramienta: ${call.name} — Job: ${jobRef.id}]`,
+                        timestamp: Timestamp.now()
+                    });
+
+                    await tg(token, 'sendMessage', {
+                        chat_id:    chatId,
+                        text:       `⏳ *JARVIS necesita acceso a tu PC*\n\nHerramienta: \`${call.name}\`\n\nTu dispositivo local enviará los botones de aprobación en un momento.`,
+                        parse_mode: 'Markdown'
+                    });
+                }
 
             } else {
                 const replyText = geminiResponse.text || '(sin respuesta)';
@@ -445,5 +570,88 @@ Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${hi
         }
 
         res.status(200).send('OK');
+    }
+);
+
+// ── Briefing Matutino — Cloud Scheduler ──────────────────────────────────────
+const WEATHER_ICONS = {
+    Clear: '☀️', Clouds: '☁️', Rain: '🌧️', Drizzle: '🌦️',
+    Thunderstorm: '⛈️', Snow: '❄️', Mist: '🌫️', Fog: '🌫️', Haze: '🌫️'
+};
+
+export const morningBriefing = onSchedule(
+    {
+        schedule:    '0 8 * * *',
+        timeZone:    'America/Argentina/Mendoza',
+        secrets:     [TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_ID, OPENWEATHER_API_KEY],
+        region:      'us-central1',
+        timeoutSeconds: 30
+    },
+    async () => {
+        const token    = TELEGRAM_BOT_TOKEN.value();
+        const chatId   = parseInt(TELEGRAM_ALLOWED_ID.value(), 10);
+        const db       = getFirestore();
+
+        // ── Clima en Mendoza ──────────────────────────────────────────────────
+        let weatherBlock = '🌡️ _(clima no disponible)_';
+        try {
+            const res = await fetch(
+                `https://api.openweathermap.org/data/2.5/weather?q=Mendoza,AR&appid=${OPENWEATHER_API_KEY.value()}&units=metric&lang=es`
+            );
+            const w = await res.json();
+            const icon = WEATHER_ICONS[w.weather[0].main] || '🌡️';
+            const desc = w.weather[0].description;
+            const temp     = Math.round(w.main.temp);
+            const feels    = Math.round(w.main.feels_like);
+            const humidity = w.main.humidity;
+            const wind     = Math.round((w.wind?.speed || 0) * 3.6);
+            weatherBlock = `${icon} *${desc.charAt(0).toUpperCase() + desc.slice(1)}* — ${temp}°C (sensación ${feels}°C)\n💧 Humedad: ${humidity}% | 💨 Viento: ${wind} km/h`;
+        } catch (e) {
+            console.error('[Briefing] Error clima:', e.message);
+        }
+
+        // ── Recordatorios del día ─────────────────────────────────────────────
+        let remindersBlock = '';
+        try {
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const tomorrow = new Date(today);
+            tomorrow.setDate(tomorrow.getDate() + 1);
+
+            const snap = await db
+                .collection('Reminders').doc(String(chatId)).collection('items')
+                .where('active', '==', true)
+                .get();
+
+            const todayReminders = snap.docs
+                .map(d => d.data())
+                .filter(r => {
+                    if (!r.datetime) return false;
+                    const d = new Date(r.datetime);
+                    return d >= today && d < tomorrow;
+                });
+
+            if (todayReminders.length > 0) {
+                const lines = todayReminders.map(r => `• ${r.message}`).join('\n');
+                remindersBlock = `\n\n📋 *Recordatorios de hoy:*\n${lines}`;
+            }
+        } catch (e) {
+            console.error('[Briefing] Error recordatorios:', e.message);
+        }
+
+        // ── Construir y enviar mensaje ────────────────────────────────────────
+        const now  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Mendoza' }));
+        const date = now.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
+        const dateCapitalized = date.charAt(0).toUpperCase() + date.slice(1);
+
+        const msg = `🌅 *¡Buenos días, Sebastián!*\n\n📅 *${dateCapitalized}*\n\n🌦️ *Mendoza:*\n${weatherBlock}${remindersBlock}\n\n_JARVIS listo para lo que necesites._`;
+
+        await tg(token, 'sendMessage', {
+            chat_id:    chatId,
+            text:       msg,
+            parse_mode: 'Markdown'
+        });
+
+        console.log('[Briefing] Enviado correctamente.');
     }
 );

@@ -21,8 +21,23 @@ import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import ffmpeg from 'fluent-ffmpeg';
 
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 const execAsync = promisify(exec);
+
+// Convierte PNG a JPEG redimensionado usando ffmpeg (Node.js, no PowerShell → no AV)
+function compressScreenshot(pngPath, jpgPath) {
+    return new Promise((resolve, reject) => {
+        ffmpeg(pngPath)
+            .outputOptions(['-q:v 5', '-vf scale=1280:-1'])
+            .output(jpgPath)
+            .on('end', resolve)
+            .on('error', reject)
+            .run();
+    });
+}
 
 // ── Inicializar Firebase Admin ────────────────────────────────────────────────
 const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT || './serviceAccount.json';
@@ -171,23 +186,104 @@ async function executeTool(tool, params, chatId) {
 
     // ── Captura de pantalla ────────────────────────────────────────────────────
     if (tool === 'take_screenshot') {
-        const filename = path.join(os.tmpdir(), `screenshot_${Date.now()}.png`);
-        const psCmd = `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; $s=[System.Windows.Forms.Screen]::PrimaryScreen; $b=$s.Bounds; $bmp=New-Object System.Drawing.Bitmap($b.Width,$b.Height); $g=[System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); $bmp.Save('${filename}',[System.Drawing.Imaging.ImageFormat]::Png)`;
+        const ts      = Date.now();
+        const pngFile = path.join(os.tmpdir(), `screenshot_${ts}.png`);
+        const jpgFile = path.join(os.tmpdir(), `screenshot_${ts}.jpg`);
+
+        // 1. Capturar pantalla completa como PNG (PowerShell — funciona sin AV)
+        const psCmd = `Add-Type -AssemblyName System.Windows.Forms,System.Drawing; $s=[System.Windows.Forms.Screen]::PrimaryScreen; $b=$s.Bounds; $bmp=New-Object System.Drawing.Bitmap($b.Width,$b.Height); $g=[System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); $bmp.Save('${pngFile}',[System.Drawing.Imaging.ImageFormat]::Png)`;
         await execAsync(psCmd, { shell: 'powershell.exe', windowsHide: true, timeout: 15_000 });
-        await bot.telegram.sendPhoto(chatId, { source: filename });
-        // Guardar en Firestore solo si entra en el límite de 1MB (base64 ~1.3x el tamaño PNG)
+
+        // 2. Comprimir a JPEG 1280px via ffmpeg (Node.js — sin PowerShell, el AV no lo toca)
+        await compressScreenshot(pngFile, jpgFile);
+
+        // 3. Enviar JPEG al chat de Telegram
+        await bot.telegram.sendPhoto(chatId, { source: jpgFile });
+
+        // 4. Guardar en Firestore como base64 para que Gemini pueda ver la pantalla
         try {
-            const imgBuffer = await fs.readFile(filename);
-            if (imgBuffer.length < 750_000) { // < 750KB PNG → base64 seguro para Firestore
-                await db.collection('Cloud_Context').doc('last_screenshot').set({
-                    base64: imgBuffer.toString('base64'),
-                    mimeType: 'image/png',
-                    timestamp: Date.now()
-                });
-            }
-        } catch { /* no crítico */ }
-        await fs.rm(filename).catch(() => {});
+            const jpgBuffer = await fs.readFile(jpgFile);
+            await db.collection('Cloud_Context').doc('last_screenshot').set({
+                base64:    jpgBuffer.toString('base64'),
+                mimeType:  'image/jpeg',
+                timestamp: ts
+            });
+            console.log(`📸 [La Garra]: Screenshot guardado en Firestore (${Math.round(jpgBuffer.length / 1024)}KB JPEG)`);
+        } catch (e) {
+            console.warn('[La Garra]: No se pudo guardar screenshot en Firestore:', e.message);
+        }
+
+        // 5. Limpiar temporales
+        await fs.rm(pngFile).catch(() => {});
+        await fs.rm(jpgFile).catch(() => {});
         return '✅ Captura de pantalla enviada.';
+    }
+
+    // ── Foto de webcam ─────────────────────────────────────────────────────────
+    if (tool === 'take_webcam_photo') {
+        const photoFile = path.join(os.tmpdir(), `webcam_${Date.now()}.jpg`);
+
+        // 1. Listar dispositivos de video disponibles
+        const { stderr: devOut } = await execAsync(
+            `"${ffmpegInstaller.path}" -f dshow -list_devices true -i dummy`,
+            { windowsHide: true }
+        ).catch(e => ({ stderr: e.stderr || '' }));
+
+        const videoMatch = devOut.match(/"([^"]+)"\s*\(video\)/);
+        if (!videoMatch) return '❌ No se encontró ninguna cámara. Verificá que la webcam esté conectada.';
+        const videoDevice = videoMatch[1];
+
+        // 2. Capturar un frame
+        await new Promise((resolve, reject) => {
+            ffmpeg()
+                .input(`video=${videoDevice}`)
+                .inputFormat('dshow')
+                .frames(1)
+                .output(photoFile)
+                .on('end', resolve)
+                .on('error', reject)
+                .run();
+        });
+
+        // 3. Enviar al chat
+        await bot.telegram.sendPhoto(chatId, { source: photoFile });
+        await fs.rm(photoFile).catch(() => {});
+        return `📷 Foto de webcam enviada (\`${videoDevice}\`).`;
+    }
+
+    // ── Grabación de micrófono ─────────────────────────────────────────────────
+    if (tool === 'record_audio') {
+        const seconds   = Math.min(parseInt(params.seconds) || 5, 30);
+        const audioFile = path.join(os.tmpdir(), `audio_${Date.now()}.mp3`);
+
+        // 1. Listar dispositivos de audio
+        const { stderr: devOut } = await execAsync(
+            `"${ffmpegInstaller.path}" -f dshow -list_devices true -i dummy`,
+            { windowsHide: true }
+        ).catch(e => ({ stderr: e.stderr || '' }));
+
+        const audioMatch = devOut.match(/"([^"]+)"\s*\(audio\)/);
+        if (!audioMatch) return '❌ No se encontró micrófono. Verificá que esté conectado y habilitado.';
+        const audioDevice = audioMatch[1];
+
+        // 2. Grabar N segundos
+        await new Promise((resolve, reject) => {
+            ffmpeg()
+                .input(`audio=${audioDevice}`)
+                .inputFormat('dshow')
+                .duration(seconds)
+                .audioCodec('libmp3lame')
+                .audioBitrate('64k')
+                .output(audioFile)
+                .on('end', resolve)
+                .on('error', reject)
+                .run();
+        });
+
+        // 3. Enviar audio al chat
+        await bot.telegram.sendAudio(chatId, { source: audioFile }, { title: `Grabación ${seconds}s` });
+        await fs.rm(audioFile).catch(() => {});
+        return `🎤 Audio de ${seconds}s grabado y enviado.`;
     }
 
     // ── Enviar archivo al chat ─────────────────────────────────────────────────
@@ -240,22 +336,29 @@ Write-Output "OK"`.trim();
         return `🖱️ ${labels[button] || 'Click'} en (${x}, ${y})`;
     }
 
-    // ── Control multimedia (teclas globales) ──────────────────────────────────
+    // ── Control multimedia (teclas globales vía keybd_event) ──────────────────
     if (tool === 'media_control') {
-        const keyMap = {
-            play_pause:  '{MEDIA_PLAY_PAUSE}',
-            next:        '{MEDIA_NEXT_TRACK}',
-            prev:        '{MEDIA_PREV_TRACK}',
-            volume_up:   '{VOLUME_UP}',
-            volume_down: '{VOLUME_DOWN}',
-            mute:        '{VOLUME_MUTE}',
+        // SendKeys NO soporta teclas multimedia — se usan Virtual Key Codes con keybd_event
+        const vkMap = {
+            play_pause:  '0xB3',
+            next:        '0xB0',
+            prev:        '0xB1',
+            mute:        '0xAD',
+            volume_up:   '0xAF',
+            volume_down: '0xAE',
         };
-        const key = keyMap[params.action];
-        if (!key) return `⚠️ Acción no reconocida: \`${escapeMd(params.action)}\`. Opciones: play_pause, next, prev, volume_up, volume_down, mute.`;
-        await execAsync(
-            `Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${key}')`,
-            { shell: 'powershell.exe', windowsHide: true }
-        );
+        const vk = vkMap[params.action];
+        if (!vk) return `⚠️ Acción no reconocida: \`${escapeMd(params.action)}\`. Opciones: play_pause, next, prev, volume_up, volume_down, mute.`;
+        const psScript = `Add-Type @"
+using System.Runtime.InteropServices;
+public class MK {
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, int extra);
+    public static void Press(byte vk) { keybd_event(vk,0,1,0); keybd_event(vk,0,3,0); }
+}
+"@
+[MK]::Press(${vk})
+Write-Output "OK"`;
+        await execAsync(psScript, { shell: 'powershell.exe', windowsHide: true });
         const labels = { play_pause: '⏯️ Play/Pause', next: '⏭️ Siguiente', prev: '⏮️ Anterior', volume_up: '🔊 Volumen +', volume_down: '🔉 Volumen -', mute: '🔇 Mute' };
         return `${labels[params.action]} enviado.`;
     }
