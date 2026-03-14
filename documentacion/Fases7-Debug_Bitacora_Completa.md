@@ -491,14 +491,144 @@ if (CLOUD_TOOLS.has(call.name)) {
 
 ---
 
+---
+
+## FASE 7.6 — Webcam, Micrófono y fix de Regex DirectShow
+
+**Período:** 2026-03-13
+
+### Herramientas nuevas
+
+**`take_webcam_photo`** — Captura un frame de la webcam y lo envía a Telegram.
+**`record_audio`** — Graba N segundos de micrófono (máx. 30) y lo envía como MP3.
+
+Ambas usan `ffmpeg DirectShow` en Windows para detectar y acceder a los dispositivos.
+
+### Bug #12 — "No se encontró ninguna cámara" con webcam conectada
+
+**Síntoma:** `take_webcam_photo` devolvía "❌ No se encontró ninguna cámara" aunque la cámara estaba físicamente conectada y visible en el sistema.
+
+**Causa:** El regex era `/"([^"]+)"\s*\(video\)/` esperando que el dispositivo terminara en `(video)`. El formato real de la salida de ffmpeg DirectShow es:
+
+```
+[dshow @ ...] DirectShow video devices (some may be both video and audio devices)
+[dshow @ ...]  "USB Camera"
+[dshow @ ...]  "OBS Virtual Camera"
+[dshow @ ...] DirectShow audio devices
+[dshow @ ...]  "Micrófono (Realtek High Definition Audio)"
+```
+
+No hay `(video)` ni `(audio)` después del nombre del dispositivo. Los dispositivos se agrupan por secciones con headers.
+
+**Fix:**
+```javascript
+// Video — primer dispositivo en la sección de video
+const videoSection = devOut.match(/DirectShow video devices[\s\S]*?(?=DirectShow audio devices|$)/);
+const videoMatch = videoSection && videoSection[0].match(/"([^"]+)"/);
+
+// Audio — primer dispositivo en la sección de audio
+const audioSection = devOut.match(/DirectShow audio devices[\s\S]*/);
+const audioMatch = audioSection && audioSection[0].match(/"([^"]+)"/);
+```
+
+**Dispositivos detectados en la máquina de desarrollo:**
+- Video: `"USB Camera"`, `"OBS Virtual Camera"`
+- Audio: `"Micrófono (Realtek High Definition Audio)"`
+
+---
+
+## FASE 7.7 — Google Calendar OAuth2
+
+**Período:** 2026-03-13
+
+### Objetivo
+JARVIS puede leer y crear eventos en el Google Calendar real del usuario.
+
+### Implementación
+
+**Herramientas nuevas:**
+- `list_calendar_events` — Lista eventos próximos (parámetro: `days`, default 7, máx. 30)
+- `add_calendar_event` — Crea un evento (`title`, `start`, `end`, `description`, `location`, `all_day`)
+
+**Flujo OAuth2 (Desktop app, primera vez):**
+1. La Garra lee `credentials.json` (descargado de Google Cloud Console → OAuth 2.0 Client ID tipo Desktop)
+2. Si no existe `token.json`: abre el browser automáticamente con la URL de autorización, levanta un servidor HTTP temporal en `localhost:3000`, espera el callback con el `code`
+3. Intercambia el code por tokens, guarda `token.json` localmente
+4. De ahí en adelante: carga `token.json` silenciosamente al arrancar
+5. Auto-refresh de tokens: si llega un nuevo `refresh_token`, actualiza `token.json`
+
+**Scope utilizado:** `https://www.googleapis.com/auth/calendar` (lectura + escritura)
+
+**Arquitectura de seguridad:**
+- `credentials.json` y `token.json` viven solo en la PC — nunca suben a Firebase ni a git (`.gitignore`)
+- El Brain (Cloud Function) no toca el calendario directamente — crea un PC_Job para La Garra
+- La Garra ejecuta la query a Google Calendar API con el token local
+
+**Código clave — `initCalendarAuth()` en `garra.js`:**
+```javascript
+async function initCalendarAuth() {
+    const { client_id, client_secret } = creds.installed;
+    const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, 'http://localhost:3000');
+
+    try {
+        // Token existente → cargar y continuar
+        const token = JSON.parse(await fs.readFile(TOKEN_PATH, 'utf8'));
+        oAuth2Client.setCredentials(token);
+        calendarClient = oAuth2Client;
+    } catch {
+        // Primera vez → flujo OAuth2 interactivo
+        const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES });
+        execAsync(`start "" "${authUrl}"`); // abre browser
+        // servidor temporal en localhost:3000
+        await new Promise((resolve) => {
+            const server = http.createServer(async (req, res) => {
+                const code = new URL(req.url, 'http://localhost:3000').searchParams.get('code');
+                if (code) {
+                    const { tokens } = await oAuth2Client.getToken(code);
+                    oAuth2Client.setCredentials(tokens);
+                    await fs.writeFile(TOKEN_PATH, JSON.stringify(tokens));
+                    calendarClient = oAuth2Client;
+                    server.close(); resolve();
+                }
+            });
+            server.listen(3000);
+        });
+    }
+}
+```
+
+### Bug #13 — Error 403 access_denied en flujo OAuth2
+
+**Síntoma:** Google mostraba "Acceso bloqueado: Jarvis no completó el proceso de verificación de Google. Error 403: access_denied"
+
+**Causa:** La OAuth consent screen estaba en modo **Testing** y la cuenta `zesdh1@gmail.com` no estaba en la lista de test users autorizados.
+
+**Fix:** Google Cloud Console → APIs & Services → OAuth consent screen → **Test users** → `+ ADD USERS` → agregar `zesdh1@gmail.com`.
+
+**Nota:** En modo Testing no se necesita verificación de Google. Solo hay que agregar el email del usuario como test user. La app puede quedarse en Testing indefinidamente para uso personal.
+
+### Bug #14 — Gemini no usaba `list_calendar_events` aunque estaba implementada
+
+**Síntoma:** JARVIS respondía "Lo siento, no tengo acceso a tu calendario" aunque La Garra ya tenía el `token.json` y el código estaba listo.
+
+**Causa:** El Brain (Cloud Function) no había sido re-deployado. Las tool declarations nuevas (`list_calendar_events`, `add_calendar_event`) no existían en el Gemini del Brain — el código en producción era el anterior.
+
+**Fix:** `cd brain && firebase deploy --only functions`
+
+**Lección:** Siempre deployar el Brain después de agregar nuevas tool declarations. La Garra puede actualizarse solo reiniciando `node garra.js`, pero el Brain requiere deploy explícito.
+
+---
+
 ## ESTADO ACTUAL DEL SISTEMA
 
 ```
 ✅ Fase 7.1 — Brain Cloud: JARVIS en Telegram 24/7
-✅ Fase 7.2 — La Garra: 19 herramientas, Aduana HITL, Conciencia
+✅ Fase 7.2 — La Garra: Aduana HITL, Conciencia, Firestore job queue
 ✅ Fase 7.3 — Control avanzado de PC: mouse, teclado, multimedia, archivos
 ✅ Fase 7.4 — Visión: Gemini ve la pantalla vía ffmpeg + Firestore base64
 ✅ Fase 7.5 — Proactividad: briefing matutino, clima, recordatorios
+✅ Fase 7.6 — Webcam + Micrófono: ffmpeg DirectShow, foto y audio a Telegram
+✅ Fase 7.7 — Google Calendar: OAuth2 local, leer y crear eventos
 ✅ Markdown estabilizado: escapeMd + backticks + fallback universal
 ✅ Paths corregidos: pc_info en Firestore → rutas absolutas correctas
 ✅ Daemon: arranque automático en Windows login
@@ -535,6 +665,10 @@ if (CLOUD_TOOLS.has(call.name)) {
 | `get_active_window` | — |
 | `search_files` | `pattern`, `path?` |
 | `download_file` | `url`, `destination` |
+| `take_webcam_photo` | — |
+| `record_audio` | `seconds?` (default 5, máx. 30) |
+| `list_calendar_events` | `days?` (default 7, máx. 30) |
+| `add_calendar_event` | `title`, `start` (ISO 8601), `end?`, `description?`, `location?`, `all_day?` |
 
 ### Herramientas Cloud (Brain — sin Aduana, instantáneas)
 
@@ -548,9 +682,4 @@ if (CLOUD_TOOLS.has(call.name)) {
 
 ## PRÓXIMAS ETAPAS
 
-Ver `Fases7-8_Cerebro_Dual_y_Android.md` para el roadmap completo.
-
-**Pendiente inmediato:**
-1. Probar `/briefing` y recordatorios (requiere deploy con `OPENWEATHER_API_KEY`)
-2. Probar visión + mouse_click (tomar screenshot → Gemini analiza → click)
-3. Fase 8 — App Android Kotlin
+🔲 **Fase 8 — App Android Kotlin** — Ver `Fases7-8_Cerebro_Dual_y_Android.md` para el roadmap completo.

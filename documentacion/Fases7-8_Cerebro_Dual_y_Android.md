@@ -6,12 +6,15 @@
 - ✅ Proyecto Firebase creado con Cloud Functions y Firestore habilitados (Plan Blaze)
 - ✅ Firebase CLI instalado y autenticado
 
-**Estado actual (2026-03-12):**
-- ✅ **Fase 7.1 COMPLETA** — Brain online en `https://us-central1-claw-brain-e6596.cloudfunctions.net/telegramWebhook`
-- ✅ JARVIS responde en Telegram 24/7 sin necesidad de que la PC esté encendida
-- ✅ `garra.js` implementado (Fase 7.2 ready to test)
-- ✅ **Fase 7.2 COMPLETA** — Flujo Brain → Garra → Aduana → resultado funcionando
-- 🔲 Fase 8 — App Android Kotlin
+**Estado actual (2026-03-13):**
+- ✅ **Fase 7.1 COMPLETA** — Brain: Firebase Cloud Function, Gemini 2.5 Flash, webhook 24/7
+- ✅ **Fase 7.2 COMPLETA** — La Garra: Aduana HITL, Conciencia, 25 herramientas
+- ✅ **Fase 7.3 COMPLETA** — Control PC: mouse, teclado, multimedia (VK codes), archivos, clipboard
+- ✅ **Fase 7.4 COMPLETA** — Visión: ffmpeg PNG→JPEG → Firestore base64 → Gemini analiza pantalla
+- ✅ **Fase 7.5 COMPLETA** — Proactividad: briefing 8AM, clima (OWM), recordatorios cloud
+- ✅ **Fase 7.6 COMPLETA** — Webcam + Micrófono: ffmpeg DirectShow, foto y audio a Telegram
+- ✅ **Fase 7.7 COMPLETA** — Google Calendar: OAuth2 local, list + add eventos
+- 🔲 **Fase 8** — App Android Kotlin
 
 ---
 
@@ -344,3 +347,213 @@ Si el token de Telegram aparece en logs, chats, o cualquier texto público: revo
 4. El Engram **nunca** sube a Firebase — solo sube el `Cloud_Context` (4 campos no sensibles)
 5. Cloud Functions validan `TELEGRAM_ALLOWED_ID` antes de procesar cualquier mensaje
 6. El token FCM del dispositivo Android es personal — guardarlo en Firestore bajo el userId del owner
+7. `credentials.json` y `token.json` (Google Calendar OAuth2) → nunca al repo, siempre en `.gitignore`
+
+---
+
+## FASE 8 — App Android Kotlin: JARVIS en el bolsillo
+
+**Objetivo:** "Hey JARVIS" desde el celular → respuesta hablada en 2 segundos, sin abrir ninguna app.
+
+---
+
+### La Visión completa
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        ANDROID                                  │
+│                                                                 │
+│  Microfono  ──► Porcupine  ──► "Hey JARVIS"                    │
+│                                    │                            │
+│                              Grabación STT                      │
+│                                    │                            │
+│                         Firebase Cloud Function                 │
+│                            (Brain / Gemini)                     │
+│                                    │                            │
+│                    ┌───────────────┴───────────────┐           │
+│                    │                               │            │
+│              Respuesta texto               PC_Job Firestore     │
+│                    │                               │            │
+│              TTS → Audio                    La Garra PC         │
+│                    │                               │            │
+│             Reproductor                    Resultado Telegram   │
+│                                                                 │
+│  Notificaciones FCM ◄────── morningBriefing (8AM)              │
+│  Botones HITL nativos ◄──── Aduana (Aprobar/Denegar)           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Sub-fases
+
+| Sub-fase | Qué hace | Tecnologías |
+|---|---|---|
+| **8.1** | Proyecto Android base + Firebase | Android Studio, Kotlin, `google-services.json` |
+| **8.2** | Wake word "Hey JARVIS" | Porcupine SDK Android |
+| **8.3** | Captura de voz + envío al Brain | Android AudioRecord, Multipart HTTP a Cloud Function |
+| **8.4** | STT en el Brain | Gemini multimodal (audio) o Cloud Speech-to-Text API |
+| **8.5** | TTS de la respuesta | Android TextToSpeech (built-in) o Google Cloud TTS |
+| **8.6** | Notificaciones FCM (briefing, alertas) | Firebase Cloud Messaging |
+| **8.7** | Botones HITL nativos (Aprobar/Denegar) | FCM notification actions |
+
+---
+
+### 8.1 — Proyecto Android base
+
+**Herramientas necesarias:**
+- Android Studio (versión más reciente)
+- JDK 17+
+- Dispositivo Android físico o emulador (API 26+ recomendado)
+
+**Setup inicial:**
+1. Nuevo proyecto Android → Empty Activity → Kotlin → `com.secureclaw.jarvis`
+2. Agregar `google-services.json` (descargar de Firebase Console → tu proyecto → Android app)
+3. En `build.gradle` (app): agregar dependencias Firebase BOM, FCM, Firestore
+4. Habilitar permisos en `AndroidManifest.xml`: `RECORD_AUDIO`, `INTERNET`, `FOREGROUND_SERVICE`, `RECEIVE_BOOT_COMPLETED`
+
+**Arquitectura interna:**
+```
+JarvisService (ForegroundService)
+    ├── PorcupineManager — escucha wake word en background
+    ├── AudioRecorder — captura voz después del wake word
+    ├── BrainApiClient — envía audio al Brain, recibe respuesta
+    └── TtsEngine — reproduce la respuesta en voz
+
+FirebaseMessagingService
+    ├── onNewToken → guarda FCM token en Firestore
+    └── onMessageReceived → muestra notificación o reproduce briefing
+```
+
+---
+
+### 8.2 — Wake Word con Porcupine
+
+**SDK:** `ai.picovoice:porcupine-android` (la misma empresa que usaste en el CLI de PC)
+
+**Diferencia vs PC:** En Android, Porcupine corre como `ForegroundService` — aparece una notificación persistente "JARVIS escuchando..." para cumplir con las restricciones de Android sobre audio en background.
+
+**Flujo:**
+```
+App inicia → startForegroundService(JarvisService)
+    → PorcupineManager.create(accessKey, "Hey-JARVIS.ppn")
+    → callback onWakeWordDetected()
+        → parar Porcupine
+        → iniciar grabación de voz (3-5 segundos o silencio)
+        → enviar audio al Brain
+        → reiniciar Porcupine
+```
+
+**Archivo `.ppn`:** El modelo de wake word personalizado "Hey JARVIS" se genera en Picovoice Console (gratuito para uso personal). Se empaqueta en `app/src/main/assets/`.
+
+---
+
+### 8.3 — Captura de voz y envío al Brain
+
+**Opción A (simple):** Grabar WAV con `AudioRecord` → convertir a FLAC/MP3 → POST multipart a una nueva Cloud Function `voiceWebhook`
+
+**Opción B (streaming):** WebSocket al Brain para respuesta en tiempo real — más complejo, para después
+
+Implementar Opción A primero.
+
+**Nueva Cloud Function `voiceWebhook`:**
+```javascript
+export const voiceWebhook = onRequest({ ... }, async (req, res) => {
+    // 1. Recibir audio multipart
+    // 2. Pasar a Gemini como inlineData (audio/wav)
+    // 3. Gemini transcribe + responde (multimodal)
+    // 4. Devolver { text: "respuesta", tts: true }
+});
+```
+
+---
+
+### 8.4 — STT con Gemini multimodal
+
+**Ventaja clave:** Gemini 2.5 Flash entiende audio directamente — no necesitamos un servicio STT separado (Google Speech-to-Text API). Se envía el audio como `inlineData` igual que hacemos con las screenshots hoy.
+
+```javascript
+const response = await chatSession.sendMessage([
+    { text: "Transcribí y respondé:" },
+    { inlineData: { mimeType: 'audio/wav', data: audioBase64 } }
+]);
+```
+
+---
+
+### 8.5 — TTS de la respuesta
+
+**Opción A (Android nativo, gratis):** `android.speech.tts.TextToSpeech` — calidad aceptable, sin costo, offline
+**Opción B (Google Cloud TTS, de pago):** Voces WaveNet de alta calidad — más natural, requiere API key y billing
+
+Empezar con Opción A. Si la calidad de voz no es satisfactoria, migrar a Opción B.
+
+---
+
+### 8.6 — Notificaciones FCM
+
+**Para el briefing matutino:**
+1. Al instalar la app, guardar el FCM token en Firestore: `users/{userId}/fcmToken`
+2. `morningBriefing` (Cloud Scheduler 8AM) → además de Telegram, enviar FCM push
+3. La app recibe el FCM, muestra notificación con el resumen del día
+
+**Para la Aduana HITL nativa:**
+1. Brain crea PC_Job → además de los botones de Telegram, envía FCM con `data payload`
+2. App muestra notificación con botones de acción nativos: **Aprobar** / **Denegar**
+3. Al tocar → app actualiza el PC_Job en Firestore directamente (sin pasar por Telegram)
+
+---
+
+### 8.7 — Botones HITL nativos
+
+```kotlin
+// En FirebaseMessagingService
+val approveIntent = Intent(context, HitlActionReceiver::class.java).apply {
+    action = "APPROVE"
+    putExtra("jobId", jobId)
+}
+val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+    .setContentTitle("⚠️ JARVIS solicita permiso")
+    .setContentText(toolDescription)
+    .addAction(R.drawable.ic_check, "Aprobar", approvePendingIntent)
+    .addAction(R.drawable.ic_close, "Denegar", denyPendingIntent)
+    .build()
+```
+
+---
+
+### Orden de implementación sugerido
+
+```
+Semana 1: 8.1 + 8.6 (base + FCM)
+    → App recibe el briefing matutino como notificación
+    → Confirma que Firebase ↔ Android funciona
+
+Semana 2: 8.2 (Wake word)
+    → ForegroundService + Porcupine
+    → Notificación persistente "escuchando"
+
+Semana 3: 8.3 + 8.4 (Voz → Brain → respuesta texto)
+    → Primer "Hey JARVIS, qué hora es" funcionando
+    → La respuesta llega como texto (sin TTS todavía)
+
+Semana 4: 8.5 (TTS)
+    → La respuesta se habla en voz
+
+Semana 5: 8.7 (HITL nativo)
+    → Botones Aprobar/Denegar en notificación nativa
+    → Ya no necesita Telegram para autorizar acciones PC
+```
+
+---
+
+### Lo que ya tenemos y reutilizamos
+
+| Componente | Estado | En Android |
+|---|---|---|
+| Brain (Firebase Cloud Function) | ✅ | Se conecta igual |
+| Firestore (PC_Jobs, Cloud_Context) | ✅ | SDK Android nativo |
+| Gemini multimodal | ✅ | Mismo modelo, mismo API key |
+| morningBriefing (Cloud Scheduler) | ✅ | Agrega envío FCM |
+| Porcupine wake word | ✅ (en PC/Node) | Mismo proveedor, SDK Android |
+| Aduana HITL | ✅ (Telegram buttons) | Migra a FCM notification actions |

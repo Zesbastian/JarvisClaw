@@ -21,11 +21,72 @@ import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
+import http from 'http';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffmpeg from 'fluent-ffmpeg';
+import { google } from 'googleapis';
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 const execAsync = promisify(exec);
+
+// ── Google Calendar OAuth2 ─────────────────────────────────────────────────────
+const CALENDAR_CREDS_PATH = path.join(process.cwd(), 'credentials.json');
+const CALENDAR_TOKEN_PATH = path.join(process.cwd(), 'token.json');
+const CALENDAR_SCOPES     = ['https://www.googleapis.com/auth/calendar'];
+let calendarClient = null;
+
+async function initCalendarAuth() {
+    let creds;
+    try {
+        creds = JSON.parse(await fs.readFile(CALENDAR_CREDS_PATH, 'utf8'));
+    } catch {
+        console.log('⚠️  [Calendar]: credentials.json no encontrado — Google Calendar deshabilitado.');
+        return;
+    }
+
+    const { client_id, client_secret } = creds.installed;
+    const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, 'http://localhost:3000');
+
+    try {
+        const token = JSON.parse(await fs.readFile(CALENDAR_TOKEN_PATH, 'utf8'));
+        oAuth2Client.setCredentials(token);
+        // Guardar refresh_token automáticamente si llega uno nuevo
+        oAuth2Client.on('tokens', async (tokens) => {
+            const current = JSON.parse(await fs.readFile(CALENDAR_TOKEN_PATH, 'utf8').catch(() => '{}'));
+            await fs.writeFile(CALENDAR_TOKEN_PATH, JSON.stringify({ ...current, ...tokens }));
+        });
+        calendarClient = oAuth2Client;
+        console.log('📅 [Calendar]: Google Calendar autenticado.');
+    } catch {
+        // Primera vez — flujo OAuth2
+        console.log('\n📅 [Calendar]: Primera vez — iniciando flujo de autorización OAuth2...');
+        const authUrl = oAuth2Client.generateAuthUrl({ access_type: 'offline', scope: CALENDAR_SCOPES });
+        console.log('🔗 URL de autorización:\n', authUrl, '\n');
+        execAsync(`start "" "${authUrl}"`).catch(() => {});
+
+        await new Promise((resolve) => {
+            const server = http.createServer(async (req, res) => {
+                try {
+                    const code = new URL(req.url, 'http://localhost:3000').searchParams.get('code');
+                    if (!code) { res.end('Sin código.'); return; }
+                    res.end('<h1>✅ Autorizado. Podés cerrar esta ventana.</h1>');
+                    server.close();
+                    const { tokens } = await oAuth2Client.getToken(code);
+                    oAuth2Client.setCredentials(tokens);
+                    await fs.writeFile(CALENDAR_TOKEN_PATH, JSON.stringify(tokens));
+                    calendarClient = oAuth2Client;
+                    console.log('✅ [Calendar]: token.json guardado. Google Calendar habilitado.');
+                    resolve();
+                } catch (err) {
+                    console.error('❌ [Calendar] Error al obtener token:', err.message);
+                    server.close();
+                    resolve();
+                }
+            });
+            server.listen(3000, () => console.log('⏳ [Calendar]: Esperando autorización en http://localhost:3000 ...'));
+        });
+    }
+}
 
 // Convierte PNG a JPEG redimensionado usando ffmpeg (Node.js, no PowerShell → no AV)
 function compressScreenshot(pngPath, jpgPath) {
@@ -63,6 +124,9 @@ await db.collection('Cloud_Context').doc('pc_info').set({
     updatedAt: new Date().toISOString()
 }, { merge: true });
 console.log(`🏠 [La Garra]: PC context publicado — ${os.userInfo().username}@${os.hostname()} (${os.homedir()})`);
+
+// ── Google Calendar — autenticación al inicio ──────────────────────────────
+await initCalendarAuth();
 
 // ── Conciencia: lista de comandos/herramientas absolutamente prohibidos ────────
 // La Aduana HITL es la capa de seguridad principal. La Conciencia solo bloquea
@@ -229,7 +293,8 @@ async function executeTool(tool, params, chatId) {
             { windowsHide: true }
         ).catch(e => ({ stderr: e.stderr || '' }));
 
-        const videoMatch = devOut.match(/"([^"]+)"\s*\(video\)/);
+        const videoSection = devOut.match(/DirectShow video devices[\s\S]*?(?=DirectShow audio devices|$)/);
+        const videoMatch = videoSection && videoSection[0].match(/"([^"]+)"/);
         if (!videoMatch) return '❌ No se encontró ninguna cámara. Verificá que la webcam esté conectada.';
         const videoDevice = videoMatch[1];
 
@@ -262,7 +327,8 @@ async function executeTool(tool, params, chatId) {
             { windowsHide: true }
         ).catch(e => ({ stderr: e.stderr || '' }));
 
-        const audioMatch = devOut.match(/"([^"]+)"\s*\(audio\)/);
+        const audioSection = devOut.match(/DirectShow audio devices[\s\S]*/);
+        const audioMatch = audioSection && audioSection[0].match(/"([^"]+)"/);
         if (!audioMatch) return '❌ No se encontró micrófono. Verificá que esté conectado y habilitado.';
         const audioDevice = audioMatch[1];
 
@@ -444,6 +510,53 @@ if ($proc) {
             { shell: 'powershell.exe', windowsHide: true, timeout: 60_000 }
         );
         return `✅ Descargado en: \`${dest}\``;
+    }
+
+    // ── Google Calendar ────────────────────────────────────────────────────────
+    if (tool === 'list_calendar_events') {
+        if (!calendarClient) return '❌ Google Calendar no autenticado. Reiniciá La Garra para iniciar el flujo OAuth2.';
+        const days = Math.min(parseInt(params?.days) || 7, 30);
+        const now  = new Date();
+        const end  = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+        const cal  = google.calendar({ version: 'v3', auth: calendarClient });
+        const res  = await cal.events.list({
+            calendarId:   'primary',
+            timeMin:      now.toISOString(),
+            timeMax:      end.toISOString(),
+            maxResults:   20,
+            singleEvents: true,
+            orderBy:      'startTime',
+        });
+        const events = res.data.items || [];
+        if (events.length === 0) return `📅 No hay eventos en los próximos ${days} días.`;
+        const lines = events.map(e => {
+            const start   = e.start.dateTime || e.start.date;
+            const date    = new Date(start);
+            const dateStr = e.start.dateTime
+                ? date.toLocaleString('es-AR', { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                : date.toLocaleDateString('es-AR', { weekday: 'short', month: 'short', day: 'numeric' });
+            const loc = e.location ? ` 📍${escapeMd(e.location)}` : '';
+            return `📌 *${escapeMd(dateStr)}* — ${escapeMd(e.summary || '(sin título)')}${loc}`;
+        }).join('\n');
+        return `📅 *Próximos eventos (${days} días):*\n\n${lines}`;
+    }
+
+    if (tool === 'add_calendar_event') {
+        if (!calendarClient) return '❌ Google Calendar no autenticado.';
+        const cal = google.calendar({ version: 'v3', auth: calendarClient });
+        const event = {
+            summary:     params.title,
+            description: params.description || '',
+            location:    params.location    || '',
+            start: params.all_day
+                ? { date: params.start }
+                : { dateTime: params.start, timeZone: 'America/Argentina/Mendoza' },
+            end: params.all_day
+                ? { date: params.end || params.start }
+                : { dateTime: params.end, timeZone: 'America/Argentina/Mendoza' },
+        };
+        const res = await cal.events.insert({ calendarId: 'primary', requestBody: event });
+        return `✅ Evento creado: *${escapeMd(res.data.summary)}* el ${escapeMd(res.data.start.dateTime || res.data.start.date)}`;
     }
 
     // ── Memoria cifrada ────────────────────────────────────────────────────────

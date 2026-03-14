@@ -260,6 +260,34 @@ const TOOLS = [{
                 required: []
             }
         },
+        // ── Google Calendar ─────────────────────────────────────────────────
+        {
+            name: 'list_calendar_events',
+            description: 'Lista los próximos eventos del Google Calendar del usuario. Usalo cuando el usuario pregunte por sus eventos, reuniones, agenda o calendario.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    days: { type: 'NUMBER', description: 'Cuántos días hacia adelante consultar (default 7, máximo 30)' }
+                },
+                required: []
+            }
+        },
+        {
+            name: 'add_calendar_event',
+            description: 'Crea un nuevo evento en el Google Calendar del usuario.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    title:       { type: 'STRING', description: 'Título del evento' },
+                    start:       { type: 'STRING', description: 'Fecha/hora de inicio en formato ISO 8601 (ej: 2026-03-15T10:00:00) o solo fecha para eventos de día completo (ej: 2026-03-15)' },
+                    end:         { type: 'STRING', description: 'Fecha/hora de fin en formato ISO 8601. Opcional si all_day=true.' },
+                    description: { type: 'STRING', description: 'Descripción o notas del evento (opcional)' },
+                    location:    { type: 'STRING', description: 'Lugar del evento (opcional)' },
+                    all_day:     { type: 'BOOLEAN', description: 'true si es un evento de día completo' }
+                },
+                required: ['title', 'start']
+            }
+        },
         // ── Memoria cifrada ─────────────────────────────────────────────────
         {
             name: 'save_memory',
@@ -452,10 +480,12 @@ export const telegramWebhook = onRequest(
                 ? `\n\nSe adjunta una captura de pantalla reciente de la PC. Analizá la imagen para identificar elementos de UI y determinar sus coordenadas exactas (x,y) antes de llamar a mouse_click. NUNCA adivines coordenadas — siempre basate en la imagen adjunta.`
                 : `\n\nREGLA CRÍTICA: Si el usuario pide hacer click en algo, PRIMERO llamá a take_screenshot para ver el estado actual de la pantalla. NUNCA uses mouse_click con coordenadas adivinadas — siempre analizá la imagen primero.`;
 
+            const calendarHint = `\n\nGoogle Calendar: Cuando el usuario pregunte por sus eventos, reuniones, agenda o qué tiene programado, usá list_calendar_events. Cuando pida crear un evento o recordatorio con fecha/hora específica, usá add_calendar_event. El calendario vive en la PC del usuario.`;
+
             const systemPrompt = `Eres ${ctx.agentPersona || 'JARVIS'}, el asistente personal de ${ctx.userName || 'tu usuario'}.
 Respondés desde la nube vía Telegram. Tenés acceso a herramientas que ejecutan operaciones en la PC del usuario (con su aprobación previa).
 Si el usuario pide acceso a archivos o memoria, usa las herramientas disponibles.
-Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${historyText}`;
+Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${calendarHint}${historyText}`;
 
             const chatSession = ai.chats.create({
                 model: 'gemini-2.5-flash',

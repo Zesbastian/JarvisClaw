@@ -19,3 +19,19 @@ documentacion/implementation_plan.md
 documentacion/task.md
 documentacion/linkedin_teaser.md
 documentacion/walkthrough.md
+
+# OAuth2 Google (NUNCA al repo)
+credentials.json
+token.json
+
+# Android — archivos generados y sensibles
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/app/google-services.json
+android/**/*.iml
+android/.idea/
+
+# Sandbox
+SecureClaw_Sandbox/
