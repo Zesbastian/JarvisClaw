@@ -28,8 +28,9 @@ class JarvisListenerService : Service() {
     companion object {
         private const val TAG        = "JARVIS-Listener"
         private const val NOTIF_ID   = 9001
-        // AccessKey de Picovoice — misma que en el proyecto PC (.env)
-        private const val ACCESS_KEY = "kFtPFrnOCwaPilTvcZBwmUEzA3iw05X7r09kc0NZCe4wmsEX0S7x3w=="
+        // AccessKey de Picovoice — obtener en https://console.picovoice.ai/
+        // Reemplazar antes de compilar. NUNCA hardcodear en producción.
+        private const val ACCESS_KEY = "YOUR_PICOVOICE_ACCESS_KEY_HERE"
     }
 
     private var porcupine: Porcupine? = null
