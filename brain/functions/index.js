@@ -288,10 +288,10 @@ const TOOLS = [{
                 required: ['title', 'start']
             }
         },
-        // ── Memoria cifrada ─────────────────────────────────────────────────
+        // ── Memoria local cifrada (requiere La Garra online) ────────────────
         {
             name: 'save_memory',
-            description: 'Guarda un recuerdo permanente en el Engram local cifrado del usuario.',
+            description: 'Guarda un recuerdo sensible en el Engram local cifrado de la PC. Usar para datos privados, contraseñas, información personal sensible. Requiere que La Garra esté online.',
             parameters: {
                 type: 'OBJECT',
                 properties: {
@@ -299,6 +299,31 @@ const TOOLS = [{
                     category: { type: 'STRING', description: 'Categoría: identity, preference, rule, context' }
                 },
                 required: ['content', 'category']
+            }
+        },
+        // ── Cloud Engram (disponible siempre, sin La Garra) ─────────────────
+        {
+            name: 'save_cloud_memory',
+            description: 'Guarda un recuerdo no sensible en el Cloud Engram (Firestore). Disponible aunque La Garra esté offline. Usar para preferencias, estilo de comunicación, contexto general, hábitos, gustos.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    key:      { type: 'STRING', description: 'Identificador único del recuerdo (ej: "prefiere_respuestas_cortas", "trabaja_de_noche")' },
+                    value:    { type: 'STRING', description: 'Valor o descripción del recuerdo' },
+                    category: { type: 'STRING', description: 'Categoría: preference, habit, context, personality' }
+                },
+                required: ['key', 'value', 'category']
+            }
+        },
+        {
+            name: 'delete_cloud_memory',
+            description: 'Elimina un recuerdo del Cloud Engram por su clave.',
+            parameters: {
+                type: 'OBJECT',
+                properties: {
+                    key: { type: 'STRING', description: 'Clave del recuerdo a eliminar' }
+                },
+                required: ['key']
             }
         },
         // ── Recordatorios (ejecutados en la nube, sin La Garra) ─────────────
@@ -444,13 +469,15 @@ export const telegramWebhook = onRequest(
             await tg(token, 'sendChatAction', { chat_id: chatId, action: 'typing' });
 
             // ── Cargar Cloud_Context (quién es el usuario) ────────────────────────
-            const [ctxSnap, pcSnap, screenshotSnap] = await Promise.all([
+            const [ctxSnap, pcSnap, screenshotSnap, cloudEngramSnap] = await Promise.all([
                 db.collection('Cloud_Context').doc(String(userId)).get(),
                 db.collection('Cloud_Context').doc('pc_info').get(),
-                db.collection('Cloud_Context').doc('last_screenshot').get()
+                db.collection('Cloud_Context').doc('last_screenshot').get(),
+                db.collection('Cloud_Engram').doc(String(userId)).get()
             ]);
-            const ctx    = ctxSnap.exists ? ctxSnap.data() : { userName: 'Usuario', agentPersona: 'JARVIS' };
-            const pcInfo = pcSnap.exists  ? pcSnap.data()  : {};
+            const ctx         = ctxSnap.exists ? ctxSnap.data() : { userName: 'Usuario', agentPersona: 'JARVIS' };
+            const pcInfo      = pcSnap.exists  ? pcSnap.data()  : {};
+            const cloudEngram = cloudEngramSnap.exists ? cloudEngramSnap.data() : {};
             // Screenshot reciente (menos de 5 minutos)
             const screenshotData = screenshotSnap.exists ? screenshotSnap.data() : null;
             const recentScreenshot = screenshotData && (Date.now() - screenshotData.timestamp) < 300_000
@@ -461,7 +488,7 @@ export const telegramWebhook = onRequest(
                 .collection('conversations').doc(String(userId))
                 .collection('messages')
                 .orderBy('timestamp', 'desc')
-                .limit(10)
+                .limit(5)
                 .get();
 
             const history = histSnap.docs.reverse().map(d => d.data());
@@ -472,28 +499,39 @@ export const telegramWebhook = onRequest(
             // ── Procesar con Gemini ───────────────────────────────────────────────
             const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY.value() });
 
+            // Determinar si el mensaje requiere contexto visual
+            const visualKeywords = /pantalla|screenshot|captura|click|clic|cursor|ver|mirá|mira|dónde|donde|abrir|ventana|botón|boton|icono|ícono|posición|posicion|coordenada/i;
+            const needsVision = !!(recentScreenshot?.base64 && visualKeywords.test(text));
+
             const pcHint = pcInfo.homeDir
                 ? `\n\nPC conectada: usuario="${pcInfo.username}", home="${pcInfo.homeDir}", hostname="${pcInfo.hostname}". IMPORTANTE: Siempre usá rutas absolutas completas al llamar herramientas (ej: "${pcInfo.homeDir}\\Pictures\\foto.png"). Nunca uses {username}, ~, ni rutas relativas.`
                 : '';
 
-            const visionHint = recentScreenshot
+            const visionHint = needsVision
                 ? `\n\nSe adjunta una captura de pantalla reciente de la PC. Analizá la imagen para identificar elementos de UI y determinar sus coordenadas exactas (x,y) antes de llamar a mouse_click. NUNCA adivines coordenadas — siempre basate en la imagen adjunta.`
                 : `\n\nREGLA CRÍTICA: Si el usuario pide hacer click en algo, PRIMERO llamá a take_screenshot para ver el estado actual de la pantalla. NUNCA uses mouse_click con coordenadas adivinadas — siempre analizá la imagen primero.`;
 
-            const calendarHint = `\n\nGoogle Calendar: Cuando el usuario pregunte por sus eventos, reuniones, agenda o qué tiene programado, usá list_calendar_events. Cuando pida crear un evento o recordatorio con fecha/hora específica, usá add_calendar_event. El calendario vive en la PC del usuario.`;
+            const calendarHint = `\n\nREGLA OBLIGATORIA — Google Calendar: SIEMPRE que el usuario pregunte por eventos, reuniones, agenda, qué tiene pendiente, o cualquier consulta de calendario, DEBÉS llamar a list_calendar_events. NUNCA respondas que no tenés acceso al calendario — tenés la herramienta list_calendar_events y DEBÉS usarla. El calendario vive en la PC del usuario (La Garra lo ejecuta).`;
+
+            // Cloud Engram — memoria no sensible siempre disponible
+            const engramEntries = Object.entries(cloudEngram).filter(([k]) => k !== '_updated');
+            const engramHint = engramEntries.length > 0
+                ? '\n\n[Cloud Engram — lo que sabés del usuario]\n' +
+                  engramEntries.map(([k, v]) => `- ${k}: ${typeof v === 'object' ? v.value : v}`).join('\n')
+                : '';
 
             const systemPrompt = `Eres ${ctx.agentPersona || 'JARVIS'}, el asistente personal de ${ctx.userName || 'tu usuario'}.
 Respondés desde la nube vía Telegram. Tenés acceso a herramientas que ejecutan operaciones en la PC del usuario (con su aprobación previa).
 Si el usuario pide acceso a archivos o memoria, usa las herramientas disponibles.
-Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${calendarHint}${historyText}`;
+Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${calendarHint}${engramHint}${historyText}`;
 
             const chatSession = ai.chats.create({
                 model: 'gemini-2.5-flash',
                 config: { systemInstruction: systemPrompt, tools: TOOLS, temperature: 0.2 }
             });
 
-            // Si hay screenshot reciente, enviarlo como imagen inline para que Gemini lo analice
-            const geminiMessage = recentScreenshot?.base64
+            // Adjuntar screenshot solo si el mensaje tiene contexto visual relevante
+            const geminiMessage = needsVision
                 ? [{ text }, { inlineData: { mimeType: recentScreenshot.mimeType || 'image/png', data: recentScreenshot.base64 } }]
                 : text;
 
@@ -512,7 +550,7 @@ Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${ca
 
             // ── Manejar respuesta ─────────────────────────────────────────────────
             // ── Herramientas cloud (sin La Garra — ejecutadas aquí mismo) ─────────
-            const CLOUD_TOOLS = new Set(['set_reminder', 'list_reminders', 'delete_reminder']);
+            const CLOUD_TOOLS = new Set(['set_reminder', 'list_reminders', 'delete_reminder', 'save_cloud_memory', 'delete_cloud_memory']);
 
             if (geminiResponse.functionCalls?.length > 0) {
                 const call = geminiResponse.functionCalls[0];
@@ -555,6 +593,23 @@ Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${ca
                         } else {
                             cloudResult = '❌ Índice inválido. Usá list_reminders para ver los disponibles.';
                         }
+                    }
+
+                    // ── Cloud Engram ──────────────────────────────────────────────
+                    if (call.name === 'save_cloud_memory') {
+                        const engramRef = db.collection('Cloud_Engram').doc(String(userId));
+                        await engramRef.set({
+                            [call.args.key]: { value: call.args.value, category: call.args.category },
+                            _updated: Timestamp.now()
+                        }, { merge: true });
+                        cloudResult = `✅ Recuerdo guardado: \`${call.args.key}\` → "${call.args.value}"`;
+                    }
+
+                    if (call.name === 'delete_cloud_memory') {
+                        const { FieldValue } = await import('firebase-admin/firestore');
+                        const engramRef = db.collection('Cloud_Engram').doc(String(userId));
+                        await engramRef.update({ [call.args.key]: FieldValue.delete() });
+                        cloudResult = `🗑️ Recuerdo \`${call.args.key}\` eliminado del Cloud Engram.`;
                     }
 
                     await tg(token, 'sendMessage', { chat_id: chatId, text: cloudResult, parse_mode: 'Markdown' });
