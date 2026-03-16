@@ -544,6 +544,9 @@ if ($proc) {
     if (tool === 'add_calendar_event') {
         if (!calendarClient) return '❌ Google Calendar no autenticado.';
         const cal = google.calendar({ version: 'v3', auth: calendarClient });
+        // Si no viene end, default 1 hora después del start
+        const endDateTime = params.end || new Date(new Date(params.start).getTime() + 60 * 60 * 1000).toISOString();
+        const endDate = params.end || params.start;
         const event = {
             summary:     params.title,
             description: params.description || '',
@@ -552,8 +555,8 @@ if ($proc) {
                 ? { date: params.start }
                 : { dateTime: params.start, timeZone: 'America/Argentina/Mendoza' },
             end: params.all_day
-                ? { date: params.end || params.start }
-                : { dateTime: params.end, timeZone: 'America/Argentina/Mendoza' },
+                ? { date: endDate }
+                : { dateTime: endDateTime, timeZone: 'America/Argentina/Mendoza' },
         };
         const res = await cal.events.insert({ calendarId: 'primary', requestBody: event });
         return `✅ Evento creado: *${escapeMd(res.data.summary)}* el ${escapeMd(res.data.start.dateTime || res.data.start.date)}`;

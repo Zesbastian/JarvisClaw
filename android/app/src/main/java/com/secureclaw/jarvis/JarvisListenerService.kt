@@ -40,6 +40,11 @@ class JarvisListenerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "JarvisListenerService iniciado")
+        if (ACCESS_KEY == "YOUR_PICOVOICE_ACCESS_KEY_HERE" || ACCESS_KEY.isBlank()) {
+            Log.w(TAG, "Wake word desactivado — AccessKey no configurada (pendiente Picovoice)")
+            startForeground(NOTIF_ID, buildForegroundNotification("JARVIS activo"))
+            return START_NOT_STICKY  // No reiniciar automáticamente
+        }
         startForeground(NOTIF_ID, buildForegroundNotification("Escuchando... di \"JARVIS\""))
         startWakeWordDetection()
         return START_STICKY

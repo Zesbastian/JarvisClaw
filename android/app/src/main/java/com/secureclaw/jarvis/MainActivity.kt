@@ -10,8 +10,12 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.PermissionController
+import androidx.lifecycle.lifecycleScope
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
@@ -20,13 +24,83 @@ class MainActivity : AppCompatActivity() {
         private const val REQUEST_PERMISSIONS = 1001
     }
 
+    private val healthManager by lazy { HealthSyncManager(this) }
+
+    // Contrato correcto para Health Connect
+    private val healthPermissionLauncher = registerForActivityResult(
+        PermissionController.createRequestPermissionResultContract()
+    ) { granted ->
+        if (granted.containsAll(HealthSyncManager.REQUIRED_PERMISSIONS)) {
+            Log.d(TAG, "Permisos Health Connect otorgados — sincronizando")
+            syncHealth()
+        } else {
+            Log.w(TAG, "Permisos Health Connect parcialmente denegados")
+            syncHealth() // intentar igual con los que tenga
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        requestRequiredPermissions()
         registerFcmToken()
-        startJarvisListener()
+
+        // En Android 14+, startForeground() con tipo "microphone" lanza SecurityException
+        // si RECORD_AUDIO no está concedido. Iniciamos el servicio solo si ya tenemos el permiso;
+        // si no, lo pedimos y lo iniciamos en onRequestPermissionsResult.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED) {
+            startJarvisListener()
+        } else {
+            requestRequiredPermissions()
+        }
+
+        initHealthConnect()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_PERMISSIONS) {
+            val audioIndex = permissions.indexOf(Manifest.permission.RECORD_AUDIO)
+            if (audioIndex >= 0 && grantResults[audioIndex] == PackageManager.PERMISSION_GRANTED) {
+                startJarvisListener()
+            } else {
+                Log.w(TAG, "RECORD_AUDIO denegado — servicio de escucha no iniciado")
+                updateStatusText("⚠️ Micrófono requerido para wake word")
+            }
+        }
+    }
+
+    private fun initHealthConnect() {
+        lifecycleScope.launch {
+            try {
+                if (!healthManager.isAvailable()) {
+                    Log.w(TAG, "Health Connect no disponible")
+                    return@launch
+                }
+                // Intentamos sincronizar directamente. Si el usuario ya otorgó permisos
+                // en la app HC, las operaciones van a funcionar. Si no, cada bloque
+                // falla silenciosamente con su propio try-catch.
+                syncHealth()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error iniciando Health Connect: ${e.message}")
+            }
+        }
+    }
+
+    private fun syncHealth() {
+        lifecycleScope.launch {
+            try {
+                healthManager.syncToday()
+                Log.d(TAG, "Health sync completado")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error en health sync: ${e.message}")
+            }
+        }
     }
 
     private fun startJarvisListener() {
@@ -40,19 +114,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestRequiredPermissions() {
-        val permissions = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED) {
-            permissions.add(Manifest.permission.RECORD_AUDIO)
-        }
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-        if (permissions.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, permissions.toTypedArray(), REQUEST_PERMISSIONS)
-        }
+        ActivityCompat.requestPermissions(this, permissions.toTypedArray(), REQUEST_PERMISSIONS)
     }
 
     private fun registerFcmToken() {
@@ -62,7 +130,7 @@ class MainActivity : AppCompatActivity() {
                 return@addOnCompleteListener
             }
             val token = task.result
-            Log.d(TAG, "FCM Token: $token")
+            Log.d(TAG, "FCM Token obtenido")
 
             // Guardar token en Firestore para que el Brain pueda enviar notificaciones
             FirebaseFirestore.getInstance()

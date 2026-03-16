@@ -19,12 +19,27 @@ import { GoogleGenAI } from '@google/genai';
 import { defineSecret } from 'firebase-functions/params';
 
 // ── Secretos (configurar con: firebase functions:secrets:set NOMBRE) ──────────
-const GEMINI_API_KEY       = defineSecret('GEMINI_API_KEY');
-const TELEGRAM_BOT_TOKEN   = defineSecret('TELEGRAM_BOT_TOKEN');
-const TELEGRAM_ALLOWED_ID  = defineSecret('TELEGRAM_ALLOWED_ID');
-const OPENWEATHER_API_KEY  = defineSecret('OPENWEATHER_API_KEY');
+const GEMINI_API_KEY                  = defineSecret('GEMINI_API_KEY');
+const TELEGRAM_BOT_TOKEN              = defineSecret('TELEGRAM_BOT_TOKEN');
+const TELEGRAM_ALLOWED_ID             = defineSecret('TELEGRAM_ALLOWED_ID');
+const OPENWEATHER_API_KEY             = defineSecret('OPENWEATHER_API_KEY');
+const GOOGLE_CALENDAR_REFRESH_TOKEN   = defineSecret('GOOGLE_CALENDAR_REFRESH_TOKEN');
+const GOOGLE_CALENDAR_CLIENT_ID       = defineSecret('GOOGLE_CALENDAR_CLIENT_ID');
+const GOOGLE_CALENDAR_CLIENT_SECRET   = defineSecret('GOOGLE_CALENDAR_CLIENT_SECRET');
 
 initializeApp();
+
+// ── Google Calendar helper (OAuth2 cloud-side) ────────────────────────────────
+async function getCalendarClient() {
+    const { google } = await import('googleapis');
+    const auth = new google.auth.OAuth2(
+        GOOGLE_CALENDAR_CLIENT_ID.value(),
+        GOOGLE_CALENDAR_CLIENT_SECRET.value(),
+        'http://localhost:3000'
+    );
+    auth.setCredentials({ refresh_token: GOOGLE_CALENDAR_REFRESH_TOKEN.value() });
+    return google.calendar({ version: 'v3', auth });
+}
 
 // ── Herramientas que Gemini puede solicitar ───────────────────────────────────
 const TOOLS = [{
@@ -372,7 +387,7 @@ async function tg(token, method, body) {
 // ── Cloud Function principal ──────────────────────────────────────────────────
 export const telegramWebhook = onRequest(
     {
-        secrets: [GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_ID],
+        secrets: [GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_ID, OPENWEATHER_API_KEY, GOOGLE_CALENDAR_REFRESH_TOKEN, GOOGLE_CALENDAR_CLIENT_ID, GOOGLE_CALENDAR_CLIENT_SECRET],
         region: 'us-central1',
         timeoutSeconds: 60,
         memory: '256MiB'
@@ -550,7 +565,7 @@ Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${ca
 
             // ── Manejar respuesta ─────────────────────────────────────────────────
             // ── Herramientas cloud (sin La Garra — ejecutadas aquí mismo) ─────────
-            const CLOUD_TOOLS = new Set(['set_reminder', 'list_reminders', 'delete_reminder', 'save_cloud_memory', 'delete_cloud_memory']);
+            const CLOUD_TOOLS = new Set(['set_reminder', 'list_reminders', 'delete_reminder', 'save_cloud_memory', 'delete_cloud_memory', 'list_calendar_events', 'add_calendar_event']);
 
             if (geminiResponse.functionCalls?.length > 0) {
                 const call = geminiResponse.functionCalls[0];
@@ -612,6 +627,57 @@ Si no necesitás herramientas, respondé directamente.${pcHint}${visionHint}${ca
                         cloudResult = `🗑️ Recuerdo \`${call.args.key}\` eliminado del Cloud Engram.`;
                     }
 
+                    // ── Google Calendar (cloud-side, sin La Garra) ─────────────────
+                    if (call.name === 'list_calendar_events') {
+                        try {
+                            const cal = await getCalendarClient();
+                            const now = new Date();
+                            const maxDate = new Date();
+                            maxDate.setDate(maxDate.getDate() + (call.args.days || 7));
+                            const res = await cal.events.list({
+                                calendarId: 'primary',
+                                timeMin: now.toISOString(),
+                                timeMax: maxDate.toISOString(),
+                                maxResults: 20,
+                                singleEvents: true,
+                                orderBy: 'startTime'
+                            });
+                            const events = res.data.items || [];
+                            if (events.length === 0) {
+                                cloudResult = '📅 No tenés eventos próximos.';
+                            } else {
+                                const lines = events.map(e => {
+                                    const start = e.start.dateTime
+                                        ? new Date(e.start.dateTime).toLocaleString('es-AR', { timeZone: 'America/Argentina/Mendoza', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+                                        : e.start.date;
+                                    return `• *${e.summary}* — ${start}`;
+                                });
+                                cloudResult = `📅 *Próximos eventos:*\n${lines.join('\n')}`;
+                            }
+                        } catch (e) {
+                            cloudResult = `❌ Error leyendo calendario: ${e.message}`;
+                        }
+                    }
+
+                    if (call.name === 'add_calendar_event') {
+                        try {
+                            const cal = await getCalendarClient();
+                            const endDateTime = call.args.end ||
+                                new Date(new Date(call.args.start).getTime() + 60 * 60 * 1000).toISOString();
+                            const event = {
+                                summary: call.args.title,
+                                description: call.args.description || '',
+                                location: call.args.location || '',
+                                start: { dateTime: call.args.start, timeZone: 'America/Argentina/Mendoza' },
+                                end:   { dateTime: endDateTime,      timeZone: 'America/Argentina/Mendoza' }
+                            };
+                            const res = await cal.events.insert({ calendarId: 'primary', requestBody: event });
+                            cloudResult = `✅ Evento creado: *${res.data.summary}* — ${new Date(res.data.start.dateTime).toLocaleString('es-AR', { timeZone: 'America/Argentina/Mendoza' })}`;
+                        } catch (e) {
+                            cloudResult = `❌ Error creando evento: ${e.message}`;
+                        }
+                    }
+
                     await tg(token, 'sendMessage', { chat_id: chatId, text: cloudResult, parse_mode: 'Markdown' });
                     await convRef.add({ role: 'assistant', content: cloudResult, timestamp: Timestamp.now() });
 
@@ -668,7 +734,7 @@ export const morningBriefing = onSchedule(
     {
         schedule:    '0 8 * * *',
         timeZone:    'America/Argentina/Mendoza',
-        secrets:     [TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_ID, OPENWEATHER_API_KEY],
+        secrets:     [TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_ID, OPENWEATHER_API_KEY, GOOGLE_CALENDAR_REFRESH_TOKEN, GOOGLE_CALENDAR_CLIENT_ID, GOOGLE_CALENDAR_CLIENT_SECRET],
         region:      'us-central1',
         timeoutSeconds: 30
     },
@@ -724,12 +790,43 @@ export const morningBriefing = onSchedule(
             console.error('[Briefing] Error recordatorios:', e.message);
         }
 
+        // ── Eventos del calendario hoy ────────────────────────────────────────
+        let calendarBlock = '';
+        try {
+            const cal = await getCalendarClient();
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+            const todayEnd = new Date();
+            todayEnd.setHours(23, 59, 59, 999);
+            const calRes = await cal.events.list({
+                calendarId: 'primary',
+                timeMin: todayStart.toISOString(),
+                timeMax: todayEnd.toISOString(),
+                maxResults: 10,
+                singleEvents: true,
+                orderBy: 'startTime',
+                timeZone: 'America/Argentina/Mendoza'
+            });
+            const events = calRes.data.items || [];
+            if (events.length > 0) {
+                const lines = events.map(e => {
+                    const start = e.start.dateTime
+                        ? new Date(e.start.dateTime).toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Mendoza', hour: '2-digit', minute: '2-digit' })
+                        : 'Todo el día';
+                    return `• ${start} — *${e.summary}*`;
+                });
+                calendarBlock = `\n\n📆 *Agenda de hoy:*\n${lines.join('\n')}`;
+            }
+        } catch (e) {
+            console.error('[Briefing] Error calendario:', e.message);
+        }
+
         // ── Construir y enviar mensaje ────────────────────────────────────────
         const now  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Mendoza' }));
         const date = now.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
         const dateCapitalized = date.charAt(0).toUpperCase() + date.slice(1);
 
-        const msg = `🌅 *¡Buenos días, Sebastián!*\n\n📅 *${dateCapitalized}*\n\n🌦️ *Mendoza:*\n${weatherBlock}${remindersBlock}\n\n_JARVIS listo para lo que necesites._`;
+        const msg = `🌅 *¡Buenos días, Sebastián!*\n\n📅 *${dateCapitalized}*\n\n🌦️ *Mendoza:*\n${weatherBlock}${calendarBlock}${remindersBlock}\n\n_JARVIS listo para lo que necesites._`;
 
         await tg(token, 'sendMessage', {
             chat_id:    chatId,

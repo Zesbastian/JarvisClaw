@@ -49,6 +49,9 @@ dependencies {
     // Porcupine — wake word "JARVIS" (built-in keyword, no .ppn needed)
     implementation(libs.porcupine)
 
+    // Health Connect — pasos, sueño, frecuencia cardíaca desde Xiaomi Band
+    implementation(libs.health.connect)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
