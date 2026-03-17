@@ -730,6 +730,41 @@ const WEATHER_ICONS = {
     Thunderstorm: '⛈️', Snow: '❄️', Mist: '🌫️', Fog: '🌫️', Haze: '🌫️'
 };
 
+// ── Helpers proactividad ──────────────────────────────────────────────────────
+
+/** Obtiene el FCM token del dispositivo Android más recientemente registrado */
+async function getActiveFcmToken(db) {
+    try {
+        const snap = await db.collection('AndroidDevices').limit(1).get();
+        if (snap.empty) return null;
+        return snap.docs[0].id;
+    } catch (e) {
+        console.error('[FCM] Error obteniendo token:', e.message);
+        return null;
+    }
+}
+
+/** Envía push notification al dispositivo Android (llega también al reloj vía Mi Fitness) */
+async function sendFcmPush(fcmToken, title, body) {
+    const { getMessaging } = await import('firebase-admin/messaging');
+    await getMessaging().send({
+        token: fcmToken,
+        notification: { title, body },
+        android: { priority: 'high' }
+    });
+}
+
+/** Verifica si ya se envió una notificación con esta clave hoy */
+async function wasAlreadyNotified(db, logKey) {
+    const doc = await db.collection('ProactiveLog').doc(logKey).get();
+    return doc.exists;
+}
+
+/** Registra que se envió la notificación para evitar duplicados */
+async function markNotified(db, logKey) {
+    await db.collection('ProactiveLog').doc(logKey).set({ sentAt: Timestamp.now() });
+}
+
 export const morningBriefing = onSchedule(
     {
         schedule:    '0 8 * * *',
@@ -821,12 +856,34 @@ export const morningBriefing = onSchedule(
             console.error('[Briefing] Error calendario:', e.message);
         }
 
+        // ── Sueño de anoche (desde Firestore HealthData) ─────────────────────
+        let sleepBlock = '';
+        try {
+            const fcmToken = await getActiveFcmToken(db);
+            if (fcmToken) {
+                const healthDoc = await db.collection('HealthData').doc(fcmToken).get();
+                if (healthDoc.exists) {
+                    const health = healthDoc.data();
+                    if (health.sleep_hours_last_night) {
+                        const h = Math.floor(health.sleep_hours_last_night);
+                        const m = Math.round((health.sleep_hours_last_night - h) * 60);
+                        const quality = health.sleep_hours_last_night >= 7 ? 'bien descansado'
+                                      : health.sleep_hours_last_night >= 5 ? 'sueño corto'
+                                      : 'poco sueño, cuidate';
+                        sleepBlock = `\n\n💤 *Sueño anoche:* ${h}h ${m}min — ${quality}`;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[Briefing] Error sueño:', e.message);
+        }
+
         // ── Construir y enviar mensaje ────────────────────────────────────────
         const now  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Mendoza' }));
         const date = now.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
         const dateCapitalized = date.charAt(0).toUpperCase() + date.slice(1);
 
-        const msg = `🌅 *¡Buenos días, Sebastián!*\n\n📅 *${dateCapitalized}*\n\n🌦️ *Mendoza:*\n${weatherBlock}${calendarBlock}${remindersBlock}\n\n_JARVIS listo para lo que necesites._`;
+        const msg = `🌅 *¡Buenos días, Sebastián!*\n\n📅 *${dateCapitalized}*\n\n🌦️ *Mendoza:*\n${weatherBlock}${sleepBlock}${calendarBlock}${remindersBlock}\n\n_JARVIS listo para lo que necesites._`;
 
         await tg(token, 'sendMessage', {
             chat_id:    chatId,
@@ -835,5 +892,125 @@ export const morningBriefing = onSchedule(
         });
 
         console.log('[Briefing] Enviado correctamente.');
+    }
+);
+
+// ── Proactividad: Pasos del día (19:00 Mendoza) ───────────────────────────────
+export const proactiveSteps = onSchedule(
+    {
+        schedule:       '0 19 * * *',
+        timeZone:       'America/Argentina/Mendoza',
+        secrets:        [TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_ID],
+        region:         'us-central1',
+        timeoutSeconds: 30
+    },
+    async () => {
+        const db     = getFirestore();
+        const token  = TELEGRAM_BOT_TOKEN.value();
+        const chatId = parseInt(TELEGRAM_ALLOWED_ID.value(), 10);
+        const today  = new Date().toISOString().split('T')[0];
+        const logKey = `steps_${today}`;
+
+        if (await wasAlreadyNotified(db, logKey)) {
+            console.log('[Steps] Ya notificado hoy.');
+            return;
+        }
+
+        const fcmToken = await getActiveFcmToken(db);
+        if (!fcmToken) { console.log('[Steps] Sin dispositivo registrado.'); return; }
+
+        const healthDoc = await db.collection('HealthData').doc(fcmToken).get();
+        if (!healthDoc.exists) { console.log('[Steps] Sin datos de salud.'); return; }
+
+        const health    = healthDoc.data();
+        const steps     = health.steps_today || 0;
+        const goal      = health.steps_goal  || 10000;
+        const remaining = goal - steps;
+
+        const msg = steps >= goal
+            ? `Llegaste a tu meta: ${steps.toLocaleString('es-AR')} pasos hoy.`
+            : `${steps.toLocaleString('es-AR')} pasos hoy. Te faltan ${remaining.toLocaleString('es-AR')} para la meta. ¿Salís un rato?`;
+
+        await tg(token, 'sendMessage', { chat_id: chatId, text: msg });
+
+        try { await sendFcmPush(fcmToken, 'JARVIS — Pasos', msg); }
+        catch (e) { console.error('[Steps] Error FCM:', e.message); }
+
+        await markNotified(db, logKey);
+        console.log(`[Steps] Notificado: ${steps} pasos.`);
+    }
+);
+
+// ── Proactividad: Recordatorio de calendario (cada 30 min, 07-22 Mendoza) ────
+export const proactiveCalendar = onSchedule(
+    {
+        schedule:       '*/30 * * * *',
+        timeZone:       'America/Argentina/Mendoza',
+        secrets:        [TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_ID, GOOGLE_CALENDAR_REFRESH_TOKEN, GOOGLE_CALENDAR_CLIENT_ID, GOOGLE_CALENDAR_CLIENT_SECRET],
+        region:         'us-central1',
+        timeoutSeconds: 30
+    },
+    async () => {
+        const now         = new Date();
+        const mendozaHour = parseInt(now.toLocaleString('en-US', {
+            timeZone: 'America/Argentina/Mendoza', hour: 'numeric', hour12: false
+        }));
+
+        // Ventana inteligente: solo avisar en horario razonable
+        if (mendozaHour < 7 || mendozaHour >= 22) {
+            console.log(`[Calendar] Fuera de ventana (${mendozaHour}hs Mendoza).`);
+            return;
+        }
+
+        const db     = getFirestore();
+        const token  = TELEGRAM_BOT_TOKEN.value();
+        const chatId = parseInt(TELEGRAM_ALLOWED_ID.value(), 10);
+        const today  = now.toISOString().split('T')[0];
+
+        // Eventos que arrancan entre 30 y 90 minutos desde ahora
+        const timeMin = new Date(now.getTime() + 30 * 60 * 1000);
+        const timeMax = new Date(now.getTime() + 90 * 60 * 1000);
+
+        let events = [];
+        try {
+            const cal    = await getCalendarClient();
+            const calRes = await cal.events.list({
+                calendarId:   'primary',
+                timeMin:      timeMin.toISOString(),
+                timeMax:      timeMax.toISOString(),
+                maxResults:   5,
+                singleEvents: true,
+                orderBy:      'startTime'
+            });
+            events = calRes.data.items || [];
+        } catch (e) {
+            console.error('[Calendar] Error obteniendo eventos:', e.message);
+            return;
+        }
+
+        const fcmToken = await getActiveFcmToken(db);
+
+        for (const event of events) {
+            const logKey = `calendar_${event.id}_${today}`;
+            if (await wasAlreadyNotified(db, logKey)) continue;
+
+            const startDate     = new Date(event.start.dateTime || event.start.date);
+            const minutesUntil  = Math.round((startDate - now) / 60000);
+            const startTime     = event.start.dateTime
+                ? startDate.toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Mendoza', hour: '2-digit', minute: '2-digit' })
+                : 'Todo el día';
+
+            const msg = `En ${minutesUntil} minutos: *${event.summary}* (${startTime})`;
+
+            await tg(token, 'sendMessage', { chat_id: chatId, text: msg, parse_mode: 'Markdown' });
+
+            if (fcmToken) {
+                try { await sendFcmPush(fcmToken, 'JARVIS — Reunión próxima', `En ${minutesUntil} min: ${event.summary}`); }
+                catch (e) { console.error('[Calendar] Error FCM:', e.message); }
+            }
+
+            await markNotified(db, logKey);
+            console.log(`[Calendar] Recordatorio: ${event.summary} en ${minutesUntil} min.`);
+        }
     }
 );
