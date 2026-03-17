@@ -744,6 +744,27 @@ async function getActiveFcmToken(db) {
     }
 }
 
+/**
+ * Obtiene el documento HealthData más reciente junto con el FCM token que lo escribió.
+ * Resuelve el problema de token mismatch: HealthData puede haber sido escrito con un
+ * token diferente al que está en AndroidDevices si el token rotó entre sesiones.
+ * @returns {{ token: string, data: object } | null}
+ */
+async function getLatestHealthData(db) {
+    try {
+        const snap = await db.collection('HealthData')
+            .orderBy('last_sync', 'desc')
+            .limit(1)
+            .get();
+        if (snap.empty) return null;
+        const doc = snap.docs[0];
+        return { token: doc.id, data: doc.data() };
+    } catch (e) {
+        console.error('[Health] Error obteniendo datos de salud:', e.message);
+        return null;
+    }
+}
+
 /** Envía push notification al dispositivo Android (llega también al reloj vía Mi Fitness) */
 async function sendFcmPush(fcmToken, title, body) {
     const { getMessaging } = await import('firebase-admin/messaging');
@@ -859,19 +880,16 @@ export const morningBriefing = onSchedule(
         // ── Sueño de anoche (desde Firestore HealthData) ─────────────────────
         let sleepBlock = '';
         try {
-            const fcmToken = await getActiveFcmToken(db);
-            if (fcmToken) {
-                const healthDoc = await db.collection('HealthData').doc(fcmToken).get();
-                if (healthDoc.exists) {
-                    const health = healthDoc.data();
-                    if (health.sleep_hours_last_night) {
-                        const h = Math.floor(health.sleep_hours_last_night);
-                        const m = Math.round((health.sleep_hours_last_night - h) * 60);
-                        const quality = health.sleep_hours_last_night >= 7 ? 'bien descansado'
-                                      : health.sleep_hours_last_night >= 5 ? 'sueño corto'
-                                      : 'poco sueño, cuidate';
-                        sleepBlock = `\n\n💤 *Sueño anoche:* ${h}h ${m}min — ${quality}`;
-                    }
+            const healthEntry = await getLatestHealthData(db);
+            if (healthEntry) {
+                const health = healthEntry.data;
+                if (health.sleep_hours_last_night) {
+                    const h = Math.floor(health.sleep_hours_last_night);
+                    const m = Math.round((health.sleep_hours_last_night - h) * 60);
+                    const quality = health.sleep_hours_last_night >= 7 ? 'bien descansado'
+                                  : health.sleep_hours_last_night >= 5 ? 'sueño corto'
+                                  : 'poco sueño, cuidate';
+                    sleepBlock = `\n\n💤 *Sueño anoche:* ${h}h ${m}min — ${quality}`;
                 }
             }
         } catch (e) {
@@ -916,13 +934,11 @@ export const proactiveSteps = onSchedule(
             return;
         }
 
-        const fcmToken = await getActiveFcmToken(db);
-        if (!fcmToken) { console.log('[Steps] Sin dispositivo registrado.'); return; }
+        const healthEntry = await getLatestHealthData(db);
+        if (!healthEntry) { console.log('[Steps] Sin datos de salud.'); return; }
 
-        const healthDoc = await db.collection('HealthData').doc(fcmToken).get();
-        if (!healthDoc.exists) { console.log('[Steps] Sin datos de salud.'); return; }
-
-        const health    = healthDoc.data();
+        const fcmToken  = healthEntry.token;
+        const health    = healthEntry.data;
         const steps     = health.steps_today || 0;
         const goal      = health.steps_goal  || 10000;
         const remaining = goal - steps;
