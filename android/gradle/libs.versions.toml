@@ -10,7 +10,7 @@ material = "1.10.0"
 firebaseBom = "33.7.0"
 googleServices = "4.4.2"
 porcupine = "3.0.2"
-healthConnect = "1.0.0-alpha11"
+healthConnect = "1.2.0-alpha02"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }

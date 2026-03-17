@@ -36,11 +36,10 @@ class HealthSyncManager(private val context: Context) {
     private val tz = ZoneId.of("America/Argentina/Mendoza")
 
     suspend fun isAvailable(): Boolean {
-        // 1.0.0-alpha no tiene getSdkStatus() — verificamos intentando crear el cliente
         return try {
-            HealthConnectClient.getOrCreate(context)
-            Log.d(TAG, "HC disponible")
-            true
+            val status = HealthConnectClient.getSdkStatus(context)
+            Log.d(TAG, "HC getSdkStatus=$status (SDK_AVAILABLE=${HealthConnectClient.SDK_AVAILABLE})")
+            status == HealthConnectClient.SDK_AVAILABLE
         } catch (e: Exception) {
             Log.w(TAG, "HC no disponible: ${e.message}")
             false
