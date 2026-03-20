@@ -1050,7 +1050,7 @@ const ANDROID_TOOLS = [{
         },
         {
             name: 'send_whatsapp',
-            description: 'Abre WhatsApp con un mensaje pre-escrito listo para enviar',
+            description: 'Abre WhatsApp con el chat y el mensaje pre-escrito. IMPORTANTE: esto NO envía el mensaje automáticamente — abre WhatsApp con el mensaje listo para que el usuario toque Enviar. Responde siempre "WhatsApp abierto, revisá y tocá Enviar" y NUNCA digas "mensaje enviado".',
             parameters: {
                 type: 'object',
                 properties: {
@@ -1144,11 +1144,21 @@ export const voiceWebhook = onRequest(
             const SYSTEM =
                 'Eres JARVIS, asistente personal de Sebastián en Mendoza, Argentina. ' +
                 'Recibes comandos de voz y respondes en español de forma breve y directa. ' +
-                'REGLA CRÍTICA: Para CUALQUIER acción en el teléfono (abrir apps, alarmas, cámara, ' +
-                'WhatsApp, SMS, llamadas, contactos, batería) DEBES llamar la herramienta correspondiente. ' +
+                'REGLA CRÍTICA: Para CUALQUIER acción en el teléfono DEBES llamar la herramienta correspondiente. ' +
                 'NUNCA digas que ejecutaste algo sin haber llamado primero la herramienta. ' +
-                'Si no hay una herramienta para lo que piden, dilo claramente. ' +
-                'Cuando recibas el resultado de una herramienta, confirma brevemente qué hiciste.';
+                '\n\nFLUJO OBLIGATORIO PARA LLAMADAS POR NOMBRE:' +
+                '\n1. Si piden llamar a alguien por nombre (ej: "llamá a Juan", "llamar a mamá"):' +
+                '\n   - Primero llama get_contacts con el nombre para obtener el número.' +
+                '\n   - Cuando recibas el resultado con el número, llama make_call con ese número.' +
+                '\n   - NUNCA respondas con texto sin haber llamado make_call.' +
+                '\n2. Si piden "abrir el marcador", "abrir llamadas" o "quiero llamar":' +
+                '\n   - Llama make_call con phone="" para abrir el marcador vacío.' +
+                '\n3. Si piden mandar WhatsApp a alguien por nombre:' +
+                '\n   - Primero get_contacts para obtener el número, luego send_whatsapp con ese número.' +
+                '\n\nCuando recibas el resultado de get_contacts:' +
+                '\n- Si hay UN solo contacto: ejecuta inmediatamente la acción pedida (make_call o send_whatsapp) con ese número. No preguntes confirmación.' +
+                '\n- Si hay MÚLTIPLES contactos: listalós brevemente y preguntá cuál. Cuando el usuario elija ("el primero", el nombre, etc), ejecutá la acción con ese número usando la herramienta correcta.' +
+                '\n- NUNCA digas "mensaje enviado" — send_whatsapp solo abre WhatsApp con el mensaje listo para que el usuario toque Enviar. Siempre decí "listo, tocá Enviar".';
 
             // Construir el historial de conversación
             const prevHistory = conversationHistory ? JSON.parse(conversationHistory) : [];

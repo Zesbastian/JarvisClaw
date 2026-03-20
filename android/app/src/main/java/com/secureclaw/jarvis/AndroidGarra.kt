@@ -82,16 +82,36 @@ class AndroidGarra(private val context: Context) {
     }
 
     private fun sendWhatsApp(phone: String, message: String): String {
-        // Limpia el número: solo dígitos y +
-        val clean = phone.replace(Regex("[^\\d+]"), "")
-        // URI scheme directo — no pasa por navegador
-        val uri = Uri.parse("whatsapp://send?phone=$clean&text=${Uri.encode(message)}")
+        val wa = normalizeForWhatsApp(phone)
+        val uri = Uri.parse("whatsapp://send?phone=$wa&text=${Uri.encode(message)}")
         val intent = Intent(Intent.ACTION_VIEW, uri).apply {
             setPackage("com.whatsapp")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
-        return "WhatsApp abierto con mensaje para $clean"
+        return "WhatsApp abierto para $wa — el usuario debe tocar Enviar"
+    }
+
+    /**
+     * Normaliza un número de teléfono argentino al formato internacional para WhatsApp.
+     * WhatsApp espera: 549XXXXXXXXXX (sin +, sin 0, con 9 para móviles AR)
+     * Ejemplos de entrada:
+     *   "0261 400-1234"   → "5492614001234"
+     *   "+54 9 261 400 1234" → "549261401234"  (ya tiene 9)
+     *   "2614001234"      → "5492614001234"
+     */
+    private fun normalizeForWhatsApp(phone: String): String {
+        // Solo dígitos
+        var digits = phone.replace(Regex("[^\\d]"), "")
+        // Si empieza con 54 (código país) → verificar si tiene el 9 de móvil
+        if (digits.startsWith("54")) {
+            digits = if (digits.length > 2 && digits[2] == '9') digits else "54" + "9" + digits.substring(2)
+            return digits
+        }
+        // Si empieza con 0 (marcación nacional) → quitar 0, agregar 549
+        if (digits.startsWith("0")) digits = digits.substring(1)
+        // Si lo que queda es 10 dígitos → número local sin código país
+        return if (digits.length == 10) "549$digits" else digits
     }
 
     private fun sendSms(phone: String, message: String): String {
@@ -105,12 +125,23 @@ class AndroidGarra(private val context: Context) {
     }
 
     private fun makeCall(phone: String): String {
-        val intent = Intent(Intent.ACTION_DIAL).apply {
-            data = Uri.parse("tel:$phone")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return if (phone.isNotBlank()) {
+            // ACTION_CALL inicia la llamada directamente (requiere CALL_PHONE)
+            val intent = Intent(Intent.ACTION_CALL).apply {
+                data = Uri.parse("tel:$phone")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            "Llamando a $phone"
+        } else {
+            // Sin número: abre el marcador vacío
+            val intent = Intent(Intent.ACTION_DIAL).apply {
+                data = Uri.parse("tel:")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            "Marcador abierto"
         }
-        context.startActivity(intent)
-        return "Marcando $phone"
     }
 
     private suspend fun getContacts(query: String): String = withContext(Dispatchers.IO) {
