@@ -35,3 +35,6 @@ android/.idea/
 
 # Sandbox
 SecureClaw_Sandbox/
+
+# Android build config con secrets
+android/app/src/main/java/com/secureclaw/jarvis/BuildConfig.java

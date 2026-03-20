@@ -1,0 +1,12 @@
+## Copiá este archivo como local.properties y completá los valores.
+## local.properties NUNCA va al repo (está en .gitignore).
+
+# Android SDK — Android Studio lo completa automáticamente
+sdk.dir=/tu/ruta/al/Android/Sdk
+
+# Porcupine — wake word detection (Picovoice)
+# Obtené tu access key gratis en: https://console.picovoice.ai/
+PORCUPINE_ACCESS_KEY=TU_ACCESS_KEY_AQUI
+
+# Gemini API Key (solo si lo usás directamente desde Android — normalmente va en el Brain)
+# GEMINI_API_KEY=TU_GEMINI_KEY_AQUI

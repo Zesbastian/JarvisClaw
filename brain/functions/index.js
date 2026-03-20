@@ -1030,3 +1030,224 @@ export const proactiveCalendar = onSchedule(
         }
     }
 );
+
+// ── voiceWebhook: recibe audio del Android, procesa con Gemini, devuelve acción ──
+// Arquitectura: Android → POST {audioBase64} → Gemini 2.5 Flash → {text, androidAction}
+// El API key queda server-side. Android ejecuta la acción localmente.
+
+const ANDROID_TOOLS = [{
+    functionDeclarations: [
+        {
+            name: 'open_app',
+            description: 'Abre una aplicación instalada en el teléfono de Sebastián',
+            parameters: {
+                type: 'object',
+                properties: {
+                    package_name: { type: 'string', description: 'Package name, ej: com.whatsapp, com.instagram.android, com.spotify.music' }
+                },
+                required: ['package_name']
+            }
+        },
+        {
+            name: 'send_whatsapp',
+            description: 'Abre WhatsApp con un mensaje pre-escrito listo para enviar',
+            parameters: {
+                type: 'object',
+                properties: {
+                    phone:   { type: 'string', description: 'Número con código de país, ej: 5492615551234' },
+                    message: { type: 'string', description: 'El texto del mensaje' }
+                },
+                required: ['phone', 'message']
+            }
+        },
+        {
+            name: 'send_sms',
+            description: 'Abre la app de mensajes con número y texto listos para enviar',
+            parameters: {
+                type: 'object',
+                properties: {
+                    phone:   { type: 'string', description: 'Número de teléfono' },
+                    message: { type: 'string', description: 'El texto del SMS' }
+                },
+                required: ['phone', 'message']
+            }
+        },
+        {
+            name: 'make_call',
+            description: 'Abre el marcador del teléfono con el número listo para llamar',
+            parameters: {
+                type: 'object',
+                properties: {
+                    phone: { type: 'string', description: 'Número de teléfono' }
+                },
+                required: ['phone']
+            }
+        },
+        {
+            name: 'get_contacts',
+            description: 'Busca contactos en la agenda del teléfono',
+            parameters: {
+                type: 'object',
+                properties: {
+                    query: { type: 'string', description: 'Nombre a buscar, vacío para todos' }
+                },
+                required: []
+            }
+        },
+        {
+            name: 'set_alarm',
+            description: 'Configura una alarma en el reloj del teléfono',
+            parameters: {
+                type: 'object',
+                properties: {
+                    hour:   { type: 'integer', description: 'Hora en formato 24h (0-23)' },
+                    minute: { type: 'integer', description: 'Minutos (0-59)' },
+                    label:  { type: 'string',  description: 'Etiqueta opcional' }
+                },
+                required: ['hour', 'minute']
+            }
+        },
+        {
+            name: 'get_battery',
+            description: 'Obtiene el nivel de batería del teléfono',
+            parameters: { type: 'object', properties: {}, required: [] }
+        },
+        {
+            name: 'list_apps',
+            description: 'Lista las aplicaciones instaladas en el teléfono',
+            parameters: { type: 'object', properties: {}, required: [] }
+        },
+        {
+            name: 'open_camera',
+            description: 'Abre la cámara del teléfono para tomar una foto o video',
+            parameters: { type: 'object', properties: {}, required: [] }
+        }
+    ]
+}];
+
+export const voiceWebhook = onRequest(
+    {
+        region:         'us-central1',
+        timeoutSeconds: 30,
+        secrets:        [GEMINI_API_KEY]
+    },
+    async (req, res) => {
+        if (req.method !== 'POST') { res.status(405).send('Method Not Allowed'); return; }
+
+        const { audioBase64, toolName, toolResult, history: historyJson, conversationHistory } = req.body;
+        const isFollowUp = !!toolName;
+        if (!audioBase64 && !isFollowUp) { res.status(400).json({ error: 'Missing audioBase64' }); return; }
+
+        try {
+            const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY.value() });
+
+            const SYSTEM =
+                'Eres JARVIS, asistente personal de Sebastián en Mendoza, Argentina. ' +
+                'Recibes comandos de voz y respondes en español de forma breve y directa. ' +
+                'REGLA CRÍTICA: Para CUALQUIER acción en el teléfono (abrir apps, alarmas, cámara, ' +
+                'WhatsApp, SMS, llamadas, contactos, batería) DEBES llamar la herramienta correspondiente. ' +
+                'NUNCA digas que ejecutaste algo sin haber llamado primero la herramienta. ' +
+                'Si no hay una herramienta para lo que piden, dilo claramente. ' +
+                'Cuando recibas el resultado de una herramienta, confirma brevemente qué hiciste.';
+
+            // Construir el historial de conversación
+            const prevHistory = conversationHistory ? JSON.parse(conversationHistory) : [];
+
+            let contents;
+            if (isFollowUp) {
+                // Follow-up: Android devuelve el resultado de una herramienta
+                const toolHistory = JSON.parse(historyJson || '[]');
+                contents = [
+                    ...toolHistory,
+                    { role: 'user', parts: [{ functionResponse: { name: toolName, response: { result: toolResult } } }] }
+                ];
+            } else {
+                // Llamada inicial: incluir historial de conversación previo + audio nuevo
+                contents = [
+                    ...prevHistory,
+                    { role: 'user', parts: [{ inlineData: { mimeType: 'audio/wav', data: audioBase64 } }] }
+                ];
+            }
+
+            // ── Turno 1: detectar si Gemini quiere llamar una función ────────
+            const r1 = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents,
+                config: { systemInstruction: SYSTEM, tools: ANDROID_TOOLS }
+            });
+
+            console.log('[Voice] R1 parts:', JSON.stringify(r1.candidates?.[0]?.content?.parts?.map(p => Object.keys(p))));
+
+            const parts1 = r1.candidates?.[0]?.content?.parts || [];
+            let text         = '';
+            let androidAction = null;
+            let funcCall      = null;
+
+            for (const part of parts1) {
+                if (part.text)         text     = part.text;
+                if (part.functionCall) funcCall = part.functionCall;
+            }
+
+            // Historial acumulado para follow-ups
+            const modelParts1 = r1.candidates?.[0]?.content?.parts || [];
+            const updatedHistory = [
+                ...contents,
+                { role: 'model', parts: modelParts1 }
+            ];
+
+            if (funcCall) {
+                androidAction = { tool: funcCall.name, params: funcCall.args || {} };
+
+                // Para tools que NO necesitan resultado del teléfono (open_app, set_alarm, etc.),
+                // hacemos Turno 2 inmediatamente con "ejecutado" para obtener confirmación verbal.
+                // Para get_contacts, el resultado real viene del teléfono vía follow-up.
+                const needsPhoneResult = ['get_contacts', 'list_apps', 'get_battery'].includes(funcCall.name);
+
+                if (!needsPhoneResult) {
+                    const r2 = await ai.models.generateContent({
+                        model: 'gemini-2.5-flash',
+                        contents: [
+                            ...contents,
+                            { role: 'model', parts: [{ functionCall: funcCall }] },
+                            { role: 'user', parts: [{ functionResponse: { name: funcCall.name, response: { result: 'ejecutado correctamente' } } }] }
+                        ],
+                        config: { systemInstruction: SYSTEM }
+                    });
+                    text = r2.candidates?.[0]?.content?.parts?.find(p => p.text)?.text || '';
+                }
+                // Si needsPhoneResult=true: el teléfono ejecuta la tool, recibe el resultado,
+                // y hace un follow-up POST con {toolName, toolResult, history}
+            }
+
+            console.log(`[Voice] funcCall=${funcCall?.name} text="${text}" action=${JSON.stringify(androidAction)}`);
+
+            // Historial para follow-up de tools dentro del mismo comando
+            const historyOut = JSON.stringify(updatedHistory.map(c => ({
+                role: c.role,
+                parts: c.parts.map(p => p.functionCall ? { functionCall: p.functionCall }
+                                   : p.functionResponse ? { functionResponse: p.functionResponse }
+                                   : { text: p.text || '' })
+            })));
+
+            // conversationHistory para memoria cross-comando: solo pares user/model text.
+            // Reemplaza el audio con placeholder y descarta function calls internos.
+            // Esto garantiza que Gemini siempre recibe un historial válido (user → model → user → ...).
+            const newPair = text ? [
+                { role: 'user',  parts: [{ text: '[comando de voz]' }] },
+                { role: 'model', parts: [{ text }] }
+            ] : [];
+            const lightHistory = [...prevHistory, ...newPair].slice(-6); // últimas 3 conversaciones
+
+            res.json({
+                text,
+                androidAction,
+                history: historyOut,
+                conversationHistory: JSON.stringify(lightHistory)
+            });
+
+        } catch (e) {
+            console.error('[Voice] Error:', e.message);
+            res.status(500).json({ error: e.message });
+        }
+    }
+);

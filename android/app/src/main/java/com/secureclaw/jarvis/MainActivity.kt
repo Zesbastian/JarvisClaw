@@ -3,8 +3,10 @@ package com.secureclaw.jarvis
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -45,9 +47,19 @@ class MainActivity : AppCompatActivity() {
 
         registerFcmToken()
 
-        // En Android 14+, startForeground() con tipo "microphone" lanza SecurityException
-        // si RECORD_AUDIO no está concedido. Iniciamos el servicio solo si ya tenemos el permiso;
-        // si no, lo pedimos y lo iniciamos en onRequestPermissionsResult.
+        // SYSTEM_ALERT_WINDOW — permite al ForegroundService lanzar actividades (abrir apps, alarmas, etc.)
+        // Sin este permiso, startActivity() desde JarvisListenerService falla silenciosamente en Android 10+
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w(TAG, "Permiso overlay no concedido — pidiendo al usuario")
+            updateStatusText("⚠️ JARVIS necesita permiso 'Mostrar sobre otras apps'")
+            val intent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+            startActivity(intent)
+        }
+
+        // Micrófono: necesario antes de arrancar el ForegroundService
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             == PackageManager.PERMISSION_GRANTED) {
             startJarvisListener()
@@ -114,7 +126,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestRequiredPermissions() {
-        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        val permissions = mutableListOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.READ_CONTACTS
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED) {
