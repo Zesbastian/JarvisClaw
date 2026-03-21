@@ -1121,6 +1121,30 @@ const ANDROID_TOOLS = [{
             name: 'open_camera',
             description: 'Abre la cámara del teléfono para tomar una foto o video',
             parameters: { type: 'object', properties: {}, required: [] }
+        },
+        {
+            name: 'open_maps',
+            description: 'Abre Google Maps para navegar a un lugar o buscar lugares cercanos. Usar navigate=true para indicaciones GPS, false para buscar.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    query:    { type: 'string',  description: 'Lugar, dirección o búsqueda. Ej: "pizzería", "Hospital Central Mendoza", "farmacia cerca"' },
+                    navigate: { type: 'boolean', description: 'true para navegación GPS, false para búsqueda en mapa' }
+                },
+                required: ['query']
+            }
+        },
+        {
+            name: 'music_control',
+            description: 'Controla la música del teléfono. Para reproducir un artista o canción específica usa action=play con query. Para play/pause/siguiente no hace falta query.',
+            parameters: {
+                type: 'object',
+                properties: {
+                    action: { type: 'string', description: 'play, pause, next, prev, stop' },
+                    query:  { type: 'string', description: 'Artista o canción para buscar en Spotify (solo con action=play)' }
+                },
+                required: ['action']
+            }
         }
     ]
 }];
@@ -1154,11 +1178,16 @@ export const voiceWebhook = onRequest(
                 '\n2. Si piden "abrir el marcador", "abrir llamadas" o "quiero llamar":' +
                 '\n   - Llama make_call con phone="" para abrir el marcador vacío.' +
                 '\n3. Si piden mandar WhatsApp a alguien por nombre:' +
-                '\n   - Primero get_contacts para obtener el número, luego send_whatsapp con ese número.' +
+                '\n   - Si el usuario especificó un mensaje: get_contacts para el número, luego send_whatsapp con ese número y el mensaje.' +
+                '\n   - Si NO especificó qué decir: preguntá "¿qué le querés decir?" ANTES de llamar cualquier tool. No llames send_whatsapp con mensaje vacío.' +
                 '\n\nCuando recibas el resultado de get_contacts:' +
                 '\n- Si hay UN solo contacto: ejecuta inmediatamente la acción pedida (make_call o send_whatsapp) con ese número. No preguntes confirmación.' +
                 '\n- Si hay MÚLTIPLES contactos: listalós brevemente y preguntá cuál. Cuando el usuario elija ("el primero", el nombre, etc), ejecutá la acción con ese número usando la herramienta correcta.' +
-                '\n- NUNCA digas "mensaje enviado" — send_whatsapp solo abre WhatsApp con el mensaje listo para que el usuario toque Enviar. Siempre decí "listo, tocá Enviar".';
+                '\n- NUNCA digas "mensaje enviado" — send_whatsapp solo abre WhatsApp con el mensaje listo para que el usuario toque Enviar. Siempre decí "listo, tocá Enviar".' +
+                '\n\nMAPS: Para "llevame a X", "cómo llego a X", "indicaciones para X" → open_maps con navigate=true. ' +
+                'Para "buscá hamburguesas", "farmacias cerca", "dónde hay X" → open_maps con navigate=false.' +
+                '\n\nMÚSICA: Para "poné música de X", "poneme a X" → music_control action=play query="X". ' +
+                'Para "pausá", "seguí", "siguiente", "anterior" → music_control con el action correspondiente sin query.';
 
             // Construir el historial de conversación
             const prevHistory = conversationHistory ? JSON.parse(conversationHistory) : [];

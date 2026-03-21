@@ -1,5 +1,5 @@
 # Fase 8.3 — Garra Android + Activación por Voz
-### Sesión: 19 de marzo de 2026
+### Sesión: 19–20 de marzo de 2026
 
 ---
 
@@ -16,7 +16,7 @@ Android → Cloud Function → Gemini 2.5 Flash → acción en el teléfono.
 ```
 Teléfono
  └── JarvisListenerService (ForegroundService)
-      ├── Porcupine v3 → detecta wake word "JARVIS"
+      ├── Vosk (offline STT) → detecta wake word "JARVIS"
       ├── AudioRecord → graba 5 segundos de comando
       ├── shortArrayToWav() → convierte PCM a WAV
       └── callVoiceWebhook() → POST a Brain
@@ -139,16 +139,105 @@ android:foregroundServiceType="dataSync|microphone"
 
 ## Estado actual (funcionando)
 
-| Comando | Estado |
+| Función | Estado |
 |---------|--------|
+| Wake word "JARVIS" (Vosk offline) | ✅ Detecta (con variantes fonéticas) |
 | "Abrí Spotify" | ✅ Funciona |
 | "Abrí WhatsApp" | ✅ Funciona |
 | "Abrí la cámara" | ✅ Funciona |
 | "Poneme una alarma a las 8" | ✅ Abre reloj con la hora |
 | "Cuánta batería tengo" | ✅ Responde con nivel y estado |
-| "Buscá a Rosalía en mis contactos" | ✅ Devuelve nombre y número |
+| "Buscá a Rosalía en mis contactos" | ✅ Devuelve nombre y número (sin tildes) |
+| "Mandá un mensaje por WhatsApp" | ✅ Abre chat con mensaje pre-cargado |
 | "Abrí Maps / Mapas" | ✅ Funciona (búsqueda fuzzy) |
 | Memoria entre comandos | ✅ Recuerda las últimas 3 conversaciones |
+
+---
+
+## Migración de Wake Word: Picovoice Porcupine → Vosk (20 de marzo)
+
+### Por qué se migró
+
+Picovoice Porcupine es una excelente solución técnica, pero su plan gratuito impone restricciones de uso que generan dependencia de una cuenta externa y una API key activa. Para un proyecto de largo plazo con despliegue propio, esa dependencia es un riesgo. Se decidió migrar a **Vosk**, que es 100% open source, sin cuenta, sin API key, y corre completamente offline en el dispositivo.
+
+### Qué es Vosk
+
+- Motor de reconocimiento de voz offline (STT) basado en Kaldi
+- Licencia Apache 2.0 — sin restricciones de uso
+- Modelos de distintos idiomas y tamaños disponibles en [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models)
+- Para Android: AAR oficial en Maven Central (`com.alphacephei:vosk-android:0.3.75`)
+- Requiere JNA como dependencia: `net.java.dev.jna:jna:5.13.0@aar`
+
+> **Nota sobre el group ID:** El artefacto correcto en Maven Central es `com.alphacephei` (con `hei` al final). El repositorio custom en `alphacephei.com/maven/` tiene disponibilidad intermitente; se recomienda usar Maven Central directamente descargando el AAR y copiándolo a `android/app/libs/`.
+
+### Cómo funciona el wake word con Vosk
+
+Vosk es un motor STT general (no un detector de keywords como Porcupine). El approach es:
+1. Vosk transcribe el audio continuamente en tiempo real (`partialResult`)
+2. Se verifica si el texto parcial contiene la palabra wake
+3. Al detectarla, se resetea el recognizer y se inicia la grabación del comando
+
+```kotlin
+val accepted = voskRecognizer?.acceptWaveForm(buffer, bytesRead) ?: false
+val partial = if (accepted) {
+    JSONObject(voskRecognizer?.result ?: "{}").optString("text", "")
+} else {
+    JSONObject(voskRecognizer?.partialResult ?: "{}").optString("partial", "")
+}
+if (partial.lowercase().contains("jarvis")) {
+    // wake word detectado
+}
+```
+
+### Problema: pronunciación argentina con modelo inglés
+
+El modelo inglés pequeño (`vosk-model-small-en-us`) no transcribe "JARVIS" con acento hispanohablante. Lo que el modelo escucha:
+
+| Lo que se dice | Lo que Vosk transcribe |
+|----------------|------------------------|
+| "JARVIS" | "jair", "harvey's", "jr" |
+
+**Solución implementada:** Ampliar la detección a las variantes fonéticas que el modelo inglés genera:
+
+```kotlin
+val lower = partial.lowercase()
+val wakeDetected = lower.contains("jarvis") ||
+    lower.contains("jair")   ||
+    lower.contains("harvey") ||
+    lower.contains("jar vis")
+```
+
+**Mejora futura:** Migrar al modelo español `vosk-model-small-es-0.42` (~39MB). Con ese modelo, "JARVIS" pronunciado en español se transcribe como "jarvis" directamente, sin necesidad de variantes.
+
+### Instalación del modelo en dispositivos con MIUI
+
+En dispositivos Xiaomi con MIUI, el sistema operativo mata los ForegroundService después de algunos minutos de ejecución, lo que interrumpe la descarga del modelo (~40MB) antes de que termine.
+
+**Solución: push manual via ADB**
+
+1. Descargar el modelo en la PC desde [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) y descomprimir
+2. Conectar el dispositivo con depuración USB habilitada
+3. Ejecutar:
+
+```bash
+# Paso 1: copiar al almacenamiento temporal del dispositivo
+adb push /ruta/local/vosk-model-small-en-us-0.15 /data/local/tmp/vosk-model
+
+# Paso 2: mover al directorio privado de la app
+adb shell run-as com.secureclaw.jarvis cp -r /data/local/tmp/vosk-model /data/user/0/com.secureclaw.jarvis/files/vosk-model
+```
+
+> **Importante:** Al instalar una nueva versión del APK, Android **no** limpia los datos de la app por defecto. Sin embargo, si se hace una desinstalación completa o se usa "Borrar datos" desde ajustes, el modelo desaparece y hay que volver a pushear.
+
+### Integración en build.gradle.kts
+
+```kotlin
+// AAR copiado a android/app/libs/
+implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+
+// JNA requerido por Vosk
+implementation("net.java.dev.jna:jna:5.13.0@aar")
+```
 
 ---
 

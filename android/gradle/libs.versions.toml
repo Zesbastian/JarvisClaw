@@ -9,7 +9,7 @@ appcompat = "1.6.1"
 material = "1.10.0"
 firebaseBom = "33.7.0"
 googleServices = "4.4.2"
-porcupine = "3.0.2"
+vosk = "0.3.32"
 healthConnect = "1.2.0-alpha02"
 
 [libraries]
@@ -22,7 +22,7 @@ material = { group = "com.google.android.material", name = "material", version.r
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging-ktx" }
 firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore-ktx" }
-porcupine = { group = "ai.picovoice", name = "porcupine-android", version.ref = "porcupine" }
+vosk = { group = "com.alphacep", name = "vosk-android", version.ref = "vosk" }
 health-connect = { group = "androidx.health.connect", name = "connect-client", version.ref = "healthConnect" }
 
 [plugins]

@@ -3,12 +3,14 @@ package com.secureclaw.jarvis
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.provider.AlarmClock
 import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.util.Log
+import android.view.KeyEvent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -43,6 +45,14 @@ class AndroidGarra(private val context: Context) {
                 "get_battery"    -> getBattery()
                 "list_apps"      -> listApps()
                 "open_camera"    -> openCamera()
+                "open_maps"      -> openMaps(
+                    params.getString("query"),
+                    params.optBoolean("navigate", false)
+                )
+                "music_control"  -> musicControl(
+                    params.getString("action"),
+                    params.optString("query", "")
+                )
                 else             -> "Tool desconocido: $toolName"
             }
         } catch (e: Exception) {
@@ -83,13 +93,24 @@ class AndroidGarra(private val context: Context) {
 
     private fun sendWhatsApp(phone: String, message: String): String {
         val wa = normalizeForWhatsApp(phone)
+        Log.d(TAG, "sendWhatsApp: phone='$phone' → normalizado='$wa'")
         val uri = Uri.parse("whatsapp://send?phone=$wa&text=${Uri.encode(message)}")
-        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
-            setPackage("com.whatsapp")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Intentar WhatsApp normal, luego WhatsApp Business, luego sin package fijo
+        val packages = listOf("com.whatsapp", "com.whatsapp.w4b", null)
+        for (pkg in packages) {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    if (pkg != null) setPackage(pkg)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                Log.d(TAG, "sendWhatsApp: abierto con pkg=$pkg")
+                return "WhatsApp abierto para $wa — tocá Enviar"
+            } catch (e: Exception) {
+                Log.w(TAG, "sendWhatsApp: falló con pkg=$pkg → ${e.message}")
+            }
         }
-        context.startActivity(intent)
-        return "WhatsApp abierto para $wa — el usuario debe tocar Enviar"
+        return "No se pudo abrir WhatsApp"
     }
 
     /**
@@ -144,12 +165,14 @@ class AndroidGarra(private val context: Context) {
         }
     }
 
+    private fun normalizeText(s: String): String =
+        s.lowercase()
+            .replace("á","a").replace("é","e").replace("í","i")
+            .replace("ó","o").replace("ú","u").replace("ü","u")
+            .replace("ñ","n")
+
     private suspend fun getContacts(query: String): String = withContext(Dispatchers.IO) {
-        val results = mutableListOf<String>()
-        val selection = if (query.isNotBlank()) {
-            "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?"
-        } else null
-        val selectionArgs = if (query.isNotBlank()) arrayOf("%$query%") else null
+        val allContacts = mutableListOf<String>()
 
         context.contentResolver.query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
@@ -157,17 +180,25 @@ class AndroidGarra(private val context: Context) {
                 ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
                 ContactsContract.CommonDataKinds.Phone.NUMBER
             ),
-            selection,
-            selectionArgs,
+            null, null,
             "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} ASC"
         )?.use { cursor ->
             val nameIdx  = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
             val phoneIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-            while (cursor.moveToNext() && results.size < 50) {
-                results.add("${cursor.getString(nameIdx)}: ${cursor.getString(phoneIdx)}")
+            while (cursor.moveToNext()) {
+                allContacts.add("${cursor.getString(nameIdx)}: ${cursor.getString(phoneIdx)}")
             }
         }
-        if (results.isEmpty()) "No se encontraron contactos" else results.joinToString("\n")
+
+        // Filtrar en Kotlin con normalización de acentos (SQL LIKE no maneja tildes)
+        val results = if (query.isNotBlank()) {
+            val q = normalizeText(query)
+            allContacts.filter { normalizeText(it).contains(q) }.take(10)
+        } else {
+            allContacts.take(50)
+        }
+
+        if (results.isEmpty()) "No se encontraron contactos con '$query'" else results.joinToString("\n")
     }
 
     private fun setAlarm(hour: Int, minute: Int, label: String): String {
@@ -188,6 +219,49 @@ class AndroidGarra(private val context: Context) {
         }
         context.startActivity(intent)
         return "Cámara abierta"
+    }
+
+    private fun openMaps(query: String, navigate: Boolean): String {
+        val uri = if (navigate) {
+            // Navegación GPS al lugar
+            Uri.parse("google.navigation:q=${Uri.encode(query)}&mode=d")
+        } else {
+            // Búsqueda en Maps (hamburguesas cerca, hospital, etc.)
+            Uri.parse("geo:0,0?q=${Uri.encode(query)}")
+        }
+        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+        return if (navigate) "Navegando hacia $query" else "Buscando '$query' en Maps"
+    }
+
+    private fun musicControl(action: String, query: String): String {
+        // Si piden una búsqueda específica (artista, canción) → abrir Spotify con deep link
+        if (query.isNotBlank() && action == "play") {
+            try {
+                val uri = Uri.parse("spotify:search:${Uri.encode(query)}")
+                val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                return "Buscando '$query' en Spotify"
+            } catch (e: Exception) {
+                Log.w(TAG, "musicControl: Spotify deep link falló → ${e.message}")
+            }
+        }
+        // Controlar reproducción con teclas de media (funciona con Spotify, YouTube Music, etc.)
+        val keyCode = when (action) {
+            "play", "pause" -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+            "next"          -> KeyEvent.KEYCODE_MEDIA_NEXT
+            "prev"          -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+            "stop"          -> KeyEvent.KEYCODE_MEDIA_STOP
+            else            -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+        }
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+        am.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+        return "Música: $action"
     }
 
     private fun getBattery(): String {
@@ -284,6 +358,24 @@ class AndroidGarra(private val context: Context) {
             "Abre la cámara del teléfono para tomar una foto",
             props(),
             required = listOf()
+        ))
+        put(funcDef(
+            "open_maps",
+            "Abre Google Maps para navegar a un lugar o buscar lugares cercanos",
+            props(
+                "query"    to ("string"  to "Lugar, dirección o búsqueda. Ej: 'pizzería', 'Hospital Central Mendoza', 'casa de mamá'"),
+                "navigate" to ("boolean" to "true para iniciar navegación GPS, false para solo buscar en el mapa")
+            ),
+            required = listOf("query")
+        ))
+        put(funcDef(
+            "music_control",
+            "Controla la música del teléfono. Puede reproducir, pausar, siguiente canción, o buscar música de un artista en Spotify.",
+            props(
+                "action" to ("string" to "Acción: 'play', 'pause', 'next', 'prev', 'stop'"),
+                "query"  to ("string" to "Artista o canción a buscar en Spotify (opcional, solo para action=play)")
+            ),
+            required = listOf("action")
         ))
     }
 

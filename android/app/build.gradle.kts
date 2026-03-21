@@ -23,11 +23,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField(
-            "String",
-            "PORCUPINE_ACCESS_KEY",
-            "\"${localProps.getProperty("PORCUPINE_ACCESS_KEY", "")}\""
-        )
     }
 
     buildFeatures {
@@ -62,8 +57,9 @@ dependencies {
     implementation(libs.firebase.messaging)
     implementation(libs.firebase.firestore)
 
-    // Porcupine — wake word "JARVIS" (built-in keyword, no .ppn needed)
-    implementation(libs.porcupine)
+    // Vosk — wake word offline, sin API key, sin servidor externo
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
 
     // Health Connect — pasos, sueño, frecuencia cardíaca desde Xiaomi Band
     implementation(libs.health.connect)
