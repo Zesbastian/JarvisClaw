@@ -25,6 +25,10 @@ documentacion/Proximos_Pasos_20mar.md
 credentials.json
 token.json
 
+# Modelos Vosk (binarios grandes, se instalan via ADB)
+*.zip
+android/.kotlin/
+
 # Android — archivos generados y sensibles
 android/local.properties
 android/.gradle/
